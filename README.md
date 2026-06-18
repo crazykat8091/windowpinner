@@ -1,6 +1,8 @@
 # Window Pinner V0.3
 
 A lightweight, modern Windows utility designed to keep any window **Always on Top** and prevent background applications or games from pausing when they lose focus.
+**Author:** CrazyKat
+**Project URL:** [https://github.com/crazykat8091/windowpinner](https://github.com/crazykat8091/windowpinner)
 
 ## ✨ Key Features
 

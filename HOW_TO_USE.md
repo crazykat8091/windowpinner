@@ -9,7 +9,7 @@ To pin most games or system-level windows, you must right-click your Python term
 - Click **Refresh** to manually update the list immediately.
 
 ### 3. Pinning & Focus Lock
-- **Pin Button:** Click "Pin" to make a window stay on top.
+- **Pin Checkbox:** Check the 'Pin' checkbox next to a window to make it stay on top.
 - **Focus Lock (Checkbox):** When enabled, Window Pinner will send heartbeat messages to the pinned window. This prevents games from pausing or muting when you click on a second monitor.
 
 ### 4. Sleep Prevention

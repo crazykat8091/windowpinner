@@ -2,7 +2,7 @@
 Window Pinner V0.3 — Keep any window always on top
 A lightweight replacement for DisplayFusion / SpecialK's "prevent window deactivation" feature.
 
-Copyright (c) 2024 Bodin Praphanthongchai (www.meshcon.tech)
+Copyright (c) 2024 CrazyKat (www.meshcon.tech)
 
 Permission is hereby granted, free of charge, to any person obtaining a copy of this software 
 and associated documentation files, to deal in the Software without restriction, including 
@@ -188,14 +188,14 @@ ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
 
 # Palette
-BG       = "#0f1117"
-CARD     = "#1a1d27"
-BORDER   = "#2a2d3a"
-ACCENT   = "#4f8ef7"
-ACCENT2  = "#7c5cfc"
-PINNED   = "#22c55e"
-MUTED    = "#6b7280"
-TEXT     = "#e8eaf0"
+BG       = "#000000"  # Pure Black for OLED
+CARD     = "#0b0b0b"  # Very dark gray for subtle depth
+BORDER   = "#1f1f1f"
+ACCENT   = "#3b82f6"  # Electric Blue
+ACCENT2  = "#d946ef"  # Fuchsia/Pink
+PINNED   = "#10b981"  # Emerald Green
+MUTED    = "#4b5563"
+TEXT     = "#f9fafb"  # High contrast white
 SUBTEXT  = "#9ca3af"
 
 FONT_DISPLAY = ("Segoe UI", 18, "bold")
@@ -236,31 +236,35 @@ class WindowRow(ctk.CTkFrame):
                                      text_color=MUTED, width=90)
         self.hwnd_lbl.grid(row=0, column=2, padx=8, pady=6, sticky="we")
 
-        # Toggle button
-        self.btn = ctk.CTkButton(
-            self,
-            text="📌 Pinned" if pinned else "  Pin",
-            font=FONT_SMALL,
-            width=100, height=30,
-            corner_radius=8,
-            fg_color=PINNED if pinned else "#2a2d3a",
-            hover_color="#16a34a" if pinned else "#3a3d4a",
-            text_color=TEXT,
-            command=self._toggle
-        )
-        self.btn.grid(row=0, column=3, padx=(0, 12), pady=6, sticky="we")
+        # Toggle Checkbox
+        self._pinned_var = ctk.BooleanVar(value=pinned) # New BooleanVar for the checkbox
+        self._pinned_var.trace_add("write", self._on_checkbox_toggle) # Bind to its own toggle
 
-    def _toggle(self):
-        self.toggle_cb(self.hwnd, self.title)
+        self.pin_checkbox = ctk.CTkCheckBox(
+            self,
+            text="Pin", # Text will always be "Pin", the state is visual
+            font=FONT_SMALL,
+            variable=self._pinned_var,
+            checkbox_width=18, checkbox_height=18,
+            onvalue=True, offvalue=False,
+            fg_color=PINNED, # Color when checked
+            hover_color="#059669", # Hover color when checked
+            border_color=BORDER, # Border color when unchecked
+            text_color=TEXT,
+        )
+        self.pin_checkbox.grid(row=0, column=3, padx=(0, 12), pady=6, sticky="we")
+
+    def _on_checkbox_toggle(self, *args):
+        # This is called when the checkbox state changes
+        new_pinned_state = self._pinned_var.get()
+        if new_pinned_state != self._pinned: # Only call toggle_cb if state actually changed
+            self._pinned = new_pinned_state # Update internal state
+            self.toggle_cb(self.hwnd, self.title) # Notify parent
 
     def update_state(self, pinned):
         self._pinned = pinned
-        self.dot.configure(text_color=PINNED if pinned else BORDER)
-        self.btn.configure(
-            text="📌 Pinned" if pinned else "  Pin",
-            fg_color=PINNED if pinned else "#2a2d3a",
-            hover_color="#16a34a" if pinned else "#3a3d4a",
-        )
+        self._pinned_var.set(pinned) # Update checkbox variable
+        self.dot.configure(text_color=PINNED if pinned else BORDER) # Update dot color
 
 
 class App(ctk.CTk):
@@ -288,9 +292,7 @@ class App(ctk.CTk):
         self._auto_refresh_enabled = ctk.BooleanVar(value=True)
         self._refresh_interval_var = ctk.StringVar(value="15")
         self._focus_lock_enabled = ctk.BooleanVar(value=True)
-        
-        self._prevent_sleep_enabled = ctk.BooleanVar(value=False) # New state for sleep prevention
-        self._prevent_sleep_enabled.trace_add("write", self._toggle_prevent_sleep)
+        self._prevent_sleep_enabled = ctk.BooleanVar(value=False)
         self._current_execution_state = ES_CONTINUOUS # To track current power state
 
         # Setup Event Hook for immediate focus transition handling
@@ -301,6 +303,17 @@ class App(ctk.CTk):
         )
 
         self._build_ui()
+        
+        # Initialize live status traces after UI is built
+        self._auto_refresh_enabled.trace_add("write", self._update_auto_refresh_ui)
+        self._focus_lock_enabled.trace_add("write", self._update_focus_lock_ui)
+        self._prevent_sleep_enabled.trace_add("write", self._toggle_prevent_sleep)
+        
+        # Set initial status bar states
+        self._update_auto_refresh_ui()
+        self._update_focus_lock_ui()
+        self._toggle_prevent_sleep()
+        
         self._schedule_refresh()
         self._maintain_active_state()
 
@@ -325,7 +338,7 @@ class App(ctk.CTk):
         
         # Admin/Status indicator
         admin_status = "ADMIN MODE" if is_admin() else "User Mode (Limited)"
-        status_color = PINNED if is_admin() else "#f87171"
+        status_color = PINNED if is_admin() else "#ef4444"
         ctk.CTkLabel(title_frame, text=f"V0.3 — {admin_status}",
                      font=FONT_SMALL, text_color=status_color).pack(anchor="w")
 
@@ -336,7 +349,7 @@ class App(ctk.CTk):
         )
         if not is_admin():
             self.pinned_badge.configure(
-                text="⚠ Run as Admin for Games",
+                text="⚠ Limited Mode",
                 text_color="#f87171", fg_color="#3a1a1a"
             )
         self.pinned_badge.grid(row=0, column=2, padx=16)
@@ -358,7 +371,7 @@ class App(ctk.CTk):
             toolbar, text="↻ Refresh", font=("Segoe UI", 12, "bold"),
             width=100, height=38, corner_radius=10,
             fg_color=CARD, hover_color="#2a2d3a", border_width=1,
-            border_color=BORDER, text_color=TEXT,
+            border_color=ACCENT, text_color=TEXT,
             command=lambda: self._refresh_list(force=True)
         )
         self.refresh_btn.grid(row=0, column=1, padx=(0, 10))
@@ -366,7 +379,7 @@ class App(ctk.CTk):
         self.unpin_all_btn = ctk.CTkButton(
             toolbar, text="✕ Unpin All", font=("Segoe UI", 12, "bold"),
             width=100, height=38, corner_radius=10,
-            fg_color="#3a1a1a", hover_color="#4a2a2a", border_width=0,
+            fg_color="#450a0a", hover_color="#7f1d1d", border_width=0,
             text_color="#f87171",
             command=self._unpin_all
         )
@@ -445,7 +458,7 @@ class App(ctk.CTk):
         status.grid_columnconfigure(0, weight=1)
 
         self.status_lbl = ctk.CTkLabel(
-            status, text="Ready", font=FONT_SMALL, text_color=MUTED, anchor="w"
+            status, text="Ready", font=FONT_SMALL, text_color=SUBTEXT, anchor="w"
         )
         self.status_lbl.grid(row=0, column=0, padx=16, pady=6, sticky="w")
 
@@ -455,27 +468,68 @@ class App(ctk.CTk):
         )
         self.auto_lbl.grid(row=0, column=1, padx=(16, 8), pady=6, sticky="e")
 
+        self.focus_status_lbl = ctk.CTkLabel(
+            status, text="○ Focus Lock off", font=FONT_SMALL,
+            text_color=MUTED, anchor="e"
+        )
+        self.focus_status_lbl.grid(row=0, column=2, padx=8, pady=6, sticky="e")
+
+        self.sleep_status_lbl = ctk.CTkLabel(
+            status, text="○ Sleep Prev. off", font=FONT_SMALL,
+            text_color=MUTED, anchor="e"
+        )
+        self.sleep_status_lbl.grid(row=0, column=3, padx=8, pady=6, sticky="e")
+
+        # GitHub Link
+        self.github_lbl = ctk.CTkLabel(
+            status, text="GitHub", font=FONT_SMALL,
+            text_color=ACCENT2, anchor="e", cursor="hand2"
+        )
+        self.github_lbl.grid(row=0, column=4, padx=8, pady=6, sticky="e")
+        self.github_lbl.bind("<Button-1>", lambda e: webbrowser.open("https://github.com/crazykat8091/windowpinner"))
+
         # Credits
         self.credits_lbl = ctk.CTkLabel(
-            status, text="By Bodin Praphanthongchai • www.meshcon.tech",
+            status, text="By CrazyKat",
             font=FONT_SMALL, text_color=ACCENT, anchor="e", cursor="hand2"
         )
-        self.credits_lbl.grid(row=0, column=2, padx=16, pady=6, sticky="e")
+        self.credits_lbl.grid(row=0, column=5, padx=(8, 16), pady=6, sticky="e")
         self.credits_lbl.bind("<Button-1>", lambda e: webbrowser.open("http://www.meshcon.tech"))
 
     # ── Logic ────────────────────────────────────────────────────────────────
 
+    def _update_auto_refresh_ui(self, *args):
+        """Update the status label for auto-refresh immediately when toggled."""
+        enabled = self._auto_refresh_enabled.get()
+        self.auto_lbl.configure(
+            text_color=PINNED if enabled else MUTED,
+            text="● Auto-refresh on" if enabled else "○ Auto-refresh off"
+        )
+        status_text = "Auto-refresh enabled" if enabled else "Auto-refresh disabled"
+        self.status_lbl.configure(text=status_text)
+        if enabled:
+            self._refresh_list()
+
+    def _update_focus_lock_ui(self, *args):
+        """Update the status bar when Focus Lock is toggled."""
+        enabled = self._focus_lock_enabled.get()
+        self.focus_status_lbl.configure(
+            text_color=PINNED if enabled else MUTED,
+            text="● Focus Lock on" if enabled else "○ Focus Lock off"
+        )
+        status_text = "Focus Lock heartbeat active" if enabled else "Focus Lock disabled"
+        self.status_lbl.configure(text=status_text)
+        if enabled:
+            # Elevate process priority to ensure the 16ms loop is reliable on Win10/11
+            try: SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS)
+            except: pass
+
     def _refresh_list(self, force=False):
         new_wins = get_windows()
         if not force and new_wins == self._all_windows:
-            # Only update status to show we are checking
-            self.auto_lbl.configure(text_color=PINNED if self._auto_refresh_enabled.get() else MUTED,
-                                   text="● Auto-refresh on" if self._auto_refresh_enabled.get() else "○ Auto-refresh off")
             return # Don't rebuild if nothing changed (prevents flicker)
         
         self._all_windows = new_wins
-        self.auto_lbl.configure(text_color=PINNED if self._auto_refresh_enabled.get() else MUTED,
-                               text="● Auto-refresh on" if self._auto_refresh_enabled.get() else "○ Auto-refresh off")
 
         # sync pinned set — remove hwnds that no longer exist
         existing = {h for h, _ in self._all_windows}
@@ -623,15 +677,20 @@ class App(ctk.CTk):
 
     def _toggle_prevent_sleep(self, *args):
         """Toggle system sleep prevention."""
-        if self._prevent_sleep_enabled.get():
+        enabled = self._prevent_sleep_enabled.get()
+        self.sleep_status_lbl.configure(
+            text_color=PINNED if enabled else MUTED,
+            text="● Sleep Prev. on" if enabled else "○ Sleep Prev. off"
+        )
+        
+        if enabled:
             # Request to keep system and display awake
-            # ES_CONTINUOUS ensures the request remains active until explicitly cleared
             new_state = ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_REQUIRED
-            self.status_lbl.configure(text="Preventing system sleep...")
+            self.status_lbl.configure(text="Sleep prevention active (Display & System)")
         else:
             # Restore default system execution state
             new_state = ES_CONTINUOUS
-            self.status_lbl.configure(text="System sleep prevention disabled.")
+            self.status_lbl.configure(text="Sleep prevention disabled")
 
         # Only call SetThreadExecutionState if the state actually changes
         if new_state != self._current_execution_state:
