@@ -1,6 +1,6 @@
 # 📌 Window Pinner
 
-**Version 0.3** — A lightweight Windows utility to keep any window always on top and prevent background apps or games from pausing when they lose focus.
+**Version 0.5** — A lightweight Windows utility to keep any window always on top and prevent background apps or games from pausing when they lose focus.
 
 > **Author:** CrazyKat | **License:** MIT | [GitHub](https://github.com/crazykat8091/windowpinner)
 
@@ -26,6 +26,7 @@ It is a **free, open-source alternative** to paid tools like DisplayFusion or Sp
 | 🔄 **Auto Refresh** | Configurable interval (5–100 s) keeps the window list up to date automatically |
 | 🛡️ **Admin Awareness** | Detects and displays whether the app is running elevated — required for some games |
 | 🔁 **Single Instance** | Named Win32 mutex prevents duplicate instances; re-focuses the existing window instead |
+| 📥 **System Tray** | Minimizes to system tray on close (X button); double-click or use tray menu to restore, unpin all, or exit cleanly |
 | 🧹 **Clean Exit** | Automatically unpins all windows and resets sleep/execution state on close |
 
 ---
@@ -34,7 +35,7 @@ It is a **free, open-source alternative** to paid tools like DisplayFusion or Sp
 
 - **OS:** Windows 10 or 11 (64-bit recommended)
 - **Python:** 3.8 or higher
-- **Dependency:** `customtkinter` (auto-installed on first run if missing)
+- **Dependencies:** `customtkinter`, `pystray`, `Pillow` (auto-installed on first run if missing)
 
 > ⚠️ **Admin rights are recommended** for pinning games and protected processes. Run as Administrator when the header shows *"User Mode (Limited)"*.
 
@@ -51,13 +52,13 @@ cd windowpinner
 
 Or download the ZIP and extract it.
 
-### 2. Install Dependency
+### 2. Install Dependencies
 
 ```bash
-pip install customtkinter
+pip install customtkinter pystray Pillow
 ```
 
-> The app will attempt to auto-install `customtkinter` if it is missing when you launch it.
+> The app will attempt to auto-install `customtkinter`, `pystray`, and `Pillow` if any are missing when you launch it.
 
 ### 3. Run
 
@@ -75,26 +76,27 @@ Right-click `window_pinner.py` → *Run as administrator*
 ## 🖥️ Interface Guide
 
 ```
-┌─────────────────────────────────────────────┐
-│ 📌 Window Pinner          V0.3 — ADMIN MODE │
-│                                    2 pinned  │
-├─────────────────────────────────────────────┤
-│ 🔍 Search windows…     [↻ Refresh] [✕ Unpin All] │
-├─────────────────────────────────────────────┤
+┌──────────────────────────────────────────────────┐
+│ 📌 Window Pinner            ✕ minimizes to tray  │
+│    V0.5 — ADMIN MODE                    2 pinned │
+├──────────────────────────────────────────────────┤
+│ 🔍 Search windows…      [↻ Refresh] [✕ Unpin All] │
+├──────────────────────────────────────────────────┤
 │ ☑ Auto Refresh  ☑ Focus Lock  Interval: 15s  ☐ Sleep Prevention │
-├─────────────────────────────────────────────┤
-│ ●  Status Dot │ Window Title        │ Handle │ [Pin] │
-│ ●  Notepad               0x000A1234   [☑ Pin] │
-│ ○  Chrome - Google       0x000B5678   [☐ Pin] │
-├─────────────────────────────────────────────┤
+├──────────────────────────────────────────────────┤
+│ ●  Status Dot │ Window Title         │ Handle │ [Pin] │
+│ ●  Notepad                0x000A1234   [☑ Pin] │
+│ ○  Chrome - Google        0x000B5678   [☐ Pin] │
+├──────────────────────────────────────────────────┤
 │ Status: Pinned: Notepad  ● Auto-refresh on  ● Focus Lock on │
-└─────────────────────────────────────────────┘
+└──────────────────────────────────────────────────┘
 ```
 
 - **Green dot (●)** — window is currently pinned (always on top)
 - **Dim dot (○)** — window is not pinned
 - **Pin checkbox** — click to toggle pinned state
-- **Header badge** — shows count of currently pinned windows; turns amber in User Mode
+- **Header badge** — shows count of currently pinned windows; turns amber/red in User Mode
+- **Tray Hint** — close button (✕) minimizes the app to the system tray instead of exiting
 
 ---
 
@@ -119,7 +121,9 @@ Calls `SetThreadExecutionState(ES_CONTINUOUS | ES_DISPLAY_REQUIRED | ES_SYSTEM_R
 
 Window Pinner is a single-file Python application using:
 
-- **`ctypes` / Win32 API** for all window management (no third-party native libs required beyond `customtkinter`)
+- **`ctypes` / Win32 API** for all window management
+- **`customtkinter`** for the modern dark UI
+- **`pystray` & `Pillow`** for system tray integration and programmatic tray icon generation
 - **`EnumWindows`** to list all visible titled windows, filtered to exclude the app's own process
 - **`SetWindowPos(HWND_TOPMOST)`** to set/clear the always-on-top flag
 - **`SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`** for immediate event-driven response when the active window changes
@@ -165,7 +169,29 @@ Pull requests are welcome. For major changes, please open an issue first to disc
 
 ## 📌 Changelog
 
-### v0.3 (Current)
+For the full detailed release notes, please see [CHANGELOG.md](CHANGELOG.md).
+
+### v0.5 (Current)
+- **NEW:** Minimize to system tray — clicking the "X" button hides the window to the system tray instead of quitting
+- **NEW:** Tray icon shows pinned count dynamically as a tooltip (e.g. "Window Pinner • 2 pinned")
+- **NEW:** Tray icon is generated programmatically (no external `.ico` file required)
+- **NEW:** Right-click context menu in tray: *Show Window*, *Unpin All*, and *Exit*
+- **NEW:** Double-click the tray icon to restore the main window
+- **NEW:** Automatic installation of `pystray` and `Pillow` dependencies if missing
+- **NEW:** "Exit" option in the tray menu performs a full clean shutdown (unpins all windows, resets sleep state, unhooks win events)
+
+### v0.4
+- Fixed `SetWindowPos` return checks and window-positioning flags
+- Added Focus Lock access checks to prevent errors on protected processes
+- Optimized window list refreshing to use handle-set comparisons for better performance
+- Added font fallback mechanisms to support systems lacking default fonts
+- Added null-HWND guard checks to prevent Win32 API errors
+- Added TclError guard checks on clean-exit to avoid UI exceptions on shutdown
+- Fixed `GetWindowLongPtr` restype definition for compatibility
+- Added a dedicated "Run as Admin" button in the header for easier elevation
+- Fixed anti-minimize logic to prevent pinned windows from staying minimized
+
+### v0.3
 - Added Focus Lock with full activation message sequence
 - Added Sleep Prevention via `SetThreadExecutionState`
 - Added `SetWinEventHook` for instant focus-change response

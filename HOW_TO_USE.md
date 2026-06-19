@@ -14,8 +14,9 @@
 6. [Search & Filter](#6-search--filter)
 7. [Auto Refresh](#7-auto-refresh)
 8. [Running as Administrator](#8-running-as-administrator)
-9. [Exiting Cleanly](#9-exiting-cleanly)
-10. [Troubleshooting](#10-troubleshooting)
+9. [Minimize to System Tray](#9-minimize-to-system-tray)
+10. [Exiting Cleanly](#10-exiting-cleanly)
+11. [Troubleshooting](#11-troubleshooting)
 
 ---
 
@@ -25,7 +26,7 @@
 python window_pinner.py
 ```
 
-**On first run**, if `customtkinter` is not installed, the app will automatically install it via `pip` and then start. You only need to wait for this once.
+**On first run**, if `customtkinter`, `pystray`, or `Pillow` are not installed, the app will automatically install them via `pip` and then start. You only need to wait for this once.
 
 You will see the main window appear with a list of all currently open, visible windows on your system.
 
@@ -34,9 +35,10 @@ You will see the main window appear with a list of all currently open, visible w
 ## 2. Understanding the Interface
 
 ### Header Bar
-- **Window Pinner** title with version number
+- **Window Pinner** title with version number (V0.5)
 - **Admin Mode / User Mode (Limited)** indicator — green means elevated, red means not
 - **Pinned count badge** — shows how many windows are currently pinned
+- **Minimize to tray hint** — shows "✕ minimizes to tray" to indicate that close acts as minimize
 
 ### Toolbar
 | Control | Function |
@@ -184,43 +186,63 @@ When elevated, the header will show **ADMIN MODE** in green.
 
 ---
 
-## 9. Exiting Cleanly
+## 9. Minimize to System Tray
 
-Close the window normally (click X or Alt+F4). Window Pinner will:
+Starting in **v0.5**, clicking the close (**✕**) button on the main window will **minimize the application to the system tray** instead of quitting. This keeps your pinned windows and Focus Lock active in the background.
 
-1. **Unpin all windows** — removes always-on-top from every pinned target
-2. **Reset sleep state** — if Sleep Prevention was active, restores the system default
-3. **Unhook the event hook** — releases the `WinEventHook` callback
-4. **Exit cleanly** — no background processes remain
-
-> Windows will not stay pinned after Window Pinner closes.
+- **System Tray Icon:** A custom pushpin icon will appear in the Windows notification area (system tray).
+  - If any windows are currently pinned, a **green dot badge** with the pinned count will appear on the icon.
+  - Hovering over the icon shows a tooltip with the status (e.g. `Window Pinner • 2 pinned`).
+- **Restoring the Window:** Double-click the tray icon, or right-click the icon and choose **Show Window** to bring the GUI back.
+- **Tray Context Menu:** Right-click the tray icon to access:
+  - **Show Window:** Restore the GUI.
+  - **Unpin All:** Immediately release all pinned windows.
+  - **Exit:** Perform a full clean shutdown of the application.
 
 ---
 
-## 10. Troubleshooting
+## 10. Exiting Cleanly
+
+To fully close Window Pinner and quit the application:
+
+1. Right-click the system tray icon in the taskbar notification area.
+2. Select **Exit**.
+
+Upon exit, Window Pinner will:
+1. **Unpin all windows** — removes always-on-top from every pinned target.
+2. **Reset sleep state** — if Sleep Prevention was active, restores the system default.
+3. **Unhook the event hook** — releases the `WinEventHook` callback.
+4. **Stop the background tray service** and destroy the tray icon.
+5. **Exit cleanly** — no background processes or threads remain.
+
+> **Note:** Pinned state is maintained only while Window Pinner is running. Windows will not stay pinned after Window Pinner closes.
+
+---
+
+## 11. Troubleshooting
 
 ### Window Pinner won't start
-- Ensure Python 3.8+ is installed and in your PATH
-- Run `pip install customtkinter` manually if auto-install fails
+- Ensure Python 3.8+ is installed and in your PATH.
+- Run `pip install customtkinter pystray Pillow` manually if auto-install fails.
 
 ### A window won't pin / pinning has no effect
-- Run Window Pinner as Administrator (see Section 8)
-- Some UWP/Store apps and certain system windows cannot be modified by any process
+- Run Window Pinner as Administrator (see Section 8).
+- Some UWP/Store apps and certain system windows cannot be modified by any process.
 
 ### Focus Lock doesn't stop the game from pausing
-- Try running as Administrator — some games require elevated access for message delivery
-- Certain games with kernel-level anti-cheat may block Win32 messages entirely — focus spoofing will not work in those cases
+- Try running as Administrator — some games require elevated access for message delivery.
+- Certain games with kernel-level anti-cheat may block Win32 messages entirely — focus spoofing will not work in those cases.
 
 ### The window list doesn't update when I open a new app
 - Click **↻ Refresh** to force an immediate scan, or
-- Lower the **Interval** value in the Settings Bar for more frequent auto-updates
+- Lower the **Interval** value in the Settings Bar for more frequent auto-updates.
 
 ### Window Pinner opens a second time instead of focusing the existing one
-- This should not happen — the app uses a named mutex to prevent this
-- If it occurs, check that no orphaned `python.exe` processes are running in Task Manager
+- This should not happen — the app uses a named mutex to prevent this.
+- If it occurs, check that no orphaned `python.exe` processes are running in Task Manager.
 
 ### The app shows duplicate windows or ghost entries
-- Click **↻ Refresh** — stale handles are pruned automatically on any refresh
+- Click **↻ Refresh** — stale handles are pruned automatically on any refresh.
 
 ---
 
