@@ -4,6 +4,18 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [0.7] — 2026-06-20
+
+### Fixed
+
+- **UWP / Xbox App Pinning (Forza Horizon 6)** — Sandboxed UWP applications running under `ApplicationFrameHost.exe` are now fully supported. Window Pinner resolves the top-level parent frame to its child game rendering window (`Windows.UI.Core.CoreWindow`) and targets the child directly for all topmost assertions (`SetWindowPos`) and focus messaging operations.
+
+- **Input Queue & Program Switching Lockups** — Removed `AttachThreadInput` from the high-frequency 16ms heartbeat loop. Focus lock messages are sent via message flood only. `AttachThreadInput` focus injection is isolated to run exactly once inside the `EVENT_SYSTEM_FOREGROUND` event callback hook when focus changes. This eliminates program switching lockups (Alt-Tab) and avoids merging the input queue during the heartbeat loop.
+
+- **Macro Key Conflicts** — By isolating `AttachThreadInput` from the heartbeat loop, input queues are no longer continuously merged, fixing mapping conflicts where macro key presses were incorrectly routed to the game process.
+
+---
+
 ## [0.6] — 2026-06-20
 
 ### Fixed

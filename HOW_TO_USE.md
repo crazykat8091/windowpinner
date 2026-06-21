@@ -1,6 +1,6 @@
 # 📖 How to Use Window Pinner
 
-> This guide covers everything from first launch to advanced Focus Lock usage, including the new Enhanced mode introduced in V0.6.
+> This guide covers everything from first launch to advanced Focus Lock usage, including the UWP support and isolated Enhanced mode introduced in V0.7.
 
 ---
 
@@ -38,7 +38,7 @@ You will see the main window appear with a list of all currently open, visible w
 
 ### Header Bar
 
-- **Window Pinner** title with version number (V0.6)
+- **Window Pinner** title with version number (V0.7)
 - **Admin Mode / User Mode (Limited)** indicator — green means elevated, red means not
 - **Pinned count badge** — shows how many windows are currently pinned
 - **Tray hint** — shows "✕ minimizes to tray" as a reminder
@@ -100,7 +100,7 @@ The target window is now set to always-on-top. It will stay above all other wind
 
 Focus Lock is Window Pinner's most powerful feature. It prevents games and applications from detecting that they've lost focus — stopping pause-on-minimize and FPS-drop behavior when you Alt+Tab.
 
-V0.6 introduces two modes:
+V0.7 supports two modes:
 
 ### Enhanced Mode (Admin required — recommended for games)
 
@@ -258,7 +258,7 @@ Upon exit, Window Pinner will:
 
 ### Focus Lock doesn't stop the game from pausing (Enhanced Mode)
 
-This is the V0.6 fix scenario. If Enhanced Mode is shown but the game still pauses:
+This is the V0.6/V0.7 fix scenario. If Enhanced Mode is shown but the game still pauses:
 
 1. Confirm you are running as Administrator (header shows **ADMIN MODE**)
 2. The game's process must be visible in the window list and pinned
