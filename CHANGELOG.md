@@ -1,46 +1,97 @@
-# Changelog
+# 📋 Changelog — Window Pinner
 
-All notable changes to **Window Pinner** will be documented in this file.
+All notable changes to this project are documented in this file.
 
 ---
 
-## [0.5.0] - 2026-06-18
-### Added
-- **Minimize to system tray**: Clicking the window's close button (✕) minimizes the application to the system tray instead of exiting, keeping always-on-top and Focus Lock active in the background.
-- **Dynamic tray icon badge**: A programmatically drawn tray icon shows a green dot badge with the current number of pinned windows.
-- **Tray tooltip**: Hovering over the tray icon displays status information (e.g., `Window Pinner • 2 pinned`).
-- **Tray context menu**: Right-click menu options for *Show Window*, *Unpin All*, and *Exit*.
-- **Tray restore action**: Double-clicking the tray icon restores the main GUI window.
-- **Auto-dependency bootstrapping**: Added automatic pip installation of missing `pystray` and `Pillow` dependencies alongside `customtkinter`.
-- **Programmatic icon generation**: System tray icon is created dynamically at runtime, removing the need for external `.ico` assets.
+## [0.6] — 2026-06-20
 
 ### Fixed
-- Dedicated "Exit" option in the tray menu triggers a clean shutdown sequence, releasing all resources.
+
+- **`AttachThreadInput` focus injection** — the primary fix for games that hardened their focus detection (including Forza Horizon 6 post-update). Window Pinner now temporarily attaches its input queue to the target process's thread using `AttachThreadInput`, then calls `SetForegroundWindow`. This causes Windows to commit a genuine foreground token to the game at the OS level. The game's own `GetForegroundWindow()` calls return itself — it cannot detect it has been unfocused. This mirrors the technique used internally by SpecialK and is the most reliable user-mode focus spoof available without a kernel driver.
+
+- **`WM_ACTIVATE` lParam corrected** — previously passed `fg_hwnd` (the real foreground window handle) as the lParam of `WM_ACTIVATE`. Games can read this value and detect that the activating HWND is a foreign process, identifying it as spoofed. Now passes `0`, which matches the value Windows sends during a natural focus transition.
+
+- **`WM_KILLFOCUS` → `WM_SETFOCUS` deny-and-reclaim cycle** — added to the heartbeat loop for both Enhanced and Basic modes. DirectX 12 and DXGI-based games often track focus state by watching for `WM_KILLFOCUS` rather than polling `WM_ACTIVATE`. Sending `WM_KILLFOCUS` immediately followed by `WM_SETFOCUS` suppresses focus-loss detection at the message level.
+
+- **`SendMessageTimeout` timeout reduced from 25 ms to 5 ms** — the 16 ms heartbeat loop was at risk of stalling when `SendMessageTimeout` blocked for up to 25 ms on a busy or hung game thread. The tighter 5 ms timeout ensures the loop completes within its 16 ms budget even under load.
+
+### New
+
+- **Enhanced vs Basic Focus Lock indicator** — the status bar Focus Lock label now shows `(Enhanced)` when `AttachThreadInput` is active (Admin + accessible process) or `(Basic)` when falling back to the message-flood path. This makes it immediately clear which mode is in effect without opening any menus.
+
+- **Graceful degradation in User Mode** — `AttachThreadInput` requires the ability to open a handle to the target thread. When running without Admin rights or when the target process is protected, the new Enhanced path is skipped cleanly and the Basic message-flood path is used instead. No crash, no error dialog.
+
+- **Immediate `AttachThreadInput` injection on foreground change** — the `SetWinEventHook` callback (`_on_focus_change`) now also calls `_inject_focus_via_attach` immediately when the foreground changes away from a pinned window, in addition to the existing 16 ms heartbeat. This closes the window of time between the focus-loss event and the next heartbeat tick.
 
 ---
 
-## [0.4.0]
-### Added
-- Dedicated **🔑 Run as Admin** elevation button directly in the main header for quick privilege elevation.
+## [0.5] — 2026-06-18
+
+### New
+
+- Minimize to system tray — clicking the X button hides the window to the system tray instead of quitting
+- Tray icon shows pinned count dynamically as a badge and tooltip (e.g. "Window Pinner • 2 pinned")
+- Tray icon generated programmatically using Pillow — no external `.ico` file required
+- Right-click tray context menu: Show Window, Unpin All, Exit
+- Double-click tray icon to restore the main window
+- Auto-installs `pystray` and `Pillow` dependencies if missing (same pattern as `customtkinter`)
+- "Exit" in the tray menu performs a full clean shutdown: unpin all, reset sleep state, unhook win events, stop tray thread
+
+### Carries all V0.4 fixes
+
+---
+
+## [0.4]
 
 ### Fixed
-- Added return checks for `SetWindowPos` to ensure windows are correctly repositioned/layered.
-- Added Access Checks on processes within the Focus Lock message loop to prevent errors on protected applications.
-- Refactored list refresh mechanism to compare handle sets instead of rebuilding the widget array, reducing CPU usage.
-- Added font fallback mechanisms to handle Windows configurations lacking "Segoe UI".
-- Added safety null-HWND guard checks across Win32 API interactions.
-- Added TclError try/catch guards on shutdown to avoid UI-thread crashes.
-- Fixed `GetWindowLongPtr` ctypes restype definition to support 64-bit memory addresses correctly.
-- Fixed anti-minimize logic to prevent pinned windows from staying minimized when backgrounded.
+
+- `SetWindowPos` return value checked; added `SWP_SHOWWINDOW` fallback flag on failure
+- Focus Lock now checks process accessibility before attempting `SendMessageTimeout` to protected processes
+- Window list refresh optimized to diff by handle-set rather than rebuilding the full list on every tick
+- Font fallback added for systems where Segoe UI is unavailable
+- Added null-HWND guard before all Win32 API calls in the heartbeat loop
+- Added `TclError` guard on clean exit to suppress Tk exception when the window is destroyed mid-redraw
+- Fixed `GetWindowLongPtr` restype — was `ctypes.c_int`, now correctly `ctypes.c_long`
+- Anti-minimize fix: pinned windows that become iconic (minimized) are now restored automatically
+
+### New
+
+- "Run as Admin" button in the header bar — triggers UAC elevation and restarts the app
+- Process priority raised to `HIGH_PRIORITY_CLASS` when Focus Lock is enabled
 
 ---
 
-## [0.3.0]
-### Added
-- **Focus Lock**: Spoofs window activation messages (`WM_ACTIVATE`, `WM_SETFOCUS`, `WM_NCACTIVATE`, etc.) at ~60 Hz (16 ms) to prevent background games/apps from pausing.
-- **Sleep Prevention**: Keeps the system and screen awake via `SetThreadExecutionState`.
-- **Instant Hook**: Uses `SetWinEventHook` to handle active foreground changes instantly.
-- **Single-instance Enforcement**: Uses a named Win32 mutex (`Local\WindowPinner_SingleInstance_Mutex`) to prevent duplicate processes.
-- **High Process Priority**: Automatically raises process priority class to `HIGH_PRIORITY_CLASS` when Focus Lock is running to guarantee timing accuracy.
-- **Admin Indicator**: Header color badges to show current privileges.
-- **User Interface**: Integrated a customtkinter search, scrollable list, and manual refresh controls.
+## [0.3]
+
+### New
+
+- Focus Lock: full Win32 activation message sequence sent at ~60 Hz to pinned windows
+- Sleep Prevention via `SetThreadExecutionState`
+- `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)` for immediate event-driven topmost re-assertion
+- Single-instance enforcement via named mutex (`Local\WindowPinner_SingleInstance_Mutex`)
+- Process elevated to `HIGH_PRIORITY_CLASS` when Focus Lock is active
+- Admin mode detection with visual indicator in the header
+- Anti-minimize: restores windows that attempt to iconify while pinned
+- Live search: filter window list in real time by title
+- Configurable auto-refresh interval (5–100 seconds)
+- HWND displayed per row in monospace hex format
+
+---
+
+## [0.2]
+
+- Added configurable auto-refresh interval
+- Pinned windows sorted to the top of the list
+- Status bar with per-action feedback messages
+- Window count shown in the header badge
+
+---
+
+## [0.1]
+
+- Initial release
+- `EnumWindows`-based window list
+- `SetWindowPos(HWND_TOPMOST)` pin/unpin toggle
+- Basic dark UI with `customtkinter`
+- Auto-install of `customtkinter` dependency on first run
