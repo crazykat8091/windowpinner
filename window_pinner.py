@@ -1,5 +1,5 @@
 """
-Window Pinner V0.7 — Keep any window always on top
+Window Pinner V0.8 — Keep any window always on top
 
 A lightweight replacement for DisplayFusion / SpecialK's "prevent window deactivation" feature.
 
@@ -21,32 +21,19 @@ DISCLAIMER: This utility interacts with Windows focus and messaging systems. Whi
 for productivity, using this tool with certain video games may technically violate their
 Terms of Service (ToS). Use at your own discretion.
 
-Changelog V0.7:
-- FIX: UWP/Xbox App Pinning support (e.g. Forza Horizon 6). Top-level ApplicationFrameWindow
-  resolved to the child game rendering window (Windows.UI.Core.CoreWindow) for pinning/focus operations.
-- FIX: Isolated AttachThreadInput to run strictly on foreground focus changes. Binds queues
-  exactly once on EVENT_SYSTEM_FOREGROUND events, preventing program switching (Alt-Tab) lockups.
-- FIX: Macro key conflict resolved by dropping AttachThreadInput from the 16ms heartbeat loop.
-
-Changelog V0.6:
-- FIX: AttachThreadInput-based focus injection — temporarily binds our input queue to the
-  target process's thread before calling SetForegroundWindow, mirroring the technique used
-  by SpecialK. This is the most reliable user-mode focus-spoof available and restores
-  compatibility with games (e.g. Forza Horizon 6) that hardened their focus detection.
-- FIX: WM_ACTIVATE lParam corrected — now passes 0 instead of fg_hwnd so games cannot
-  detect a mismatched foreign HWND in the activation message.
-- FIX: WM_KILLFOCUS → WM_SETFOCUS deny-and-reclaim cycle added to the heartbeat loop.
-  Some games (DX12/DXGI-based) respond to focus-loss suppression rather than focus-gain.
-- FIX: SendMessageTimeout reduced from 25 ms to 5 ms to prevent the 16 ms heartbeat loop
-  from stalling on hung or high-latency game threads.
-- NEW: AttachThreadInput gracefully degrades — if Admin rights are not available, falls
-  back cleanly to the V0.5 message-flood approach with no crash or error.
-- NEW: Focus Lock status indicator now shows "(Enhanced)" when AttachThreadInput is active
-  vs "(Basic)" when falling back to message-only mode.
-
-CARRIES ALL V0.5 FEATURES (Tray minimize, tray badge, tray menu, pystray/Pillow
-auto-install, programmatic tray icon, Run as Admin button, single-instance mutex,
-anti-minimize, clean exit, Sleep Prevention, Auto Refresh, live search)
+Changelog V0.8:
+- FIX: Removed SetForegroundWindow and AttachThreadInput from _on_focus_change entirely.
+  V0.7 called _inject_focus_once(game_hwnd) inside the WinEvent hook. This created an
+  infinite re-entrant loop: user clicks Chrome → hook fires → SetForegroundWindow(Forza)
+  → hook fires again with Forza as new foreground → SetForegroundWindow(Forza) → loop →
+  focus permanently locked on the game, impossible to switch away.
+- FIX: _on_focus_change now only re-asserts HWND_TOPMOST (visual layering) when a
+  non-pinned window takes foreground. No focus injection of any kind happens here.
+  Focus spoofing (WM_ACTIVATE, WM_SETFOCUS etc.) is handled exclusively by the 16 ms
+  heartbeat, which already skips a pinned window when it IS the real foreground window.
+- KEPT from V0.7: UWP/Xbox HWND resolution via EnumChildWindows, WM_ACTIVATE lParam=0
+  fix, WM_KILLFOCUS→WM_SETFOCUS deny-and-reclaim cycle, 5 ms SendMessageTimeout,
+  graceful Admin/non-Admin path split.
 """
 
 import ctypes
@@ -72,23 +59,25 @@ SWP_NOACTIVATE = 0x0010
 SWP_SHOWWINDOW = 0x0040
 SWP_FLAGS      = SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE
 
-EnumWindows            = user32.EnumWindows
-GetWindowText          = user32.GetWindowTextW
-GetWindowTextLen       = user32.GetWindowTextLengthW
-IsWindowVisible        = user32.IsWindowVisible
+EnumWindows              = user32.EnumWindows
+EnumChildWindows         = user32.EnumChildWindows
+GetWindowText            = user32.GetWindowTextW
+GetWindowTextLen         = user32.GetWindowTextLengthW
+GetClassName             = user32.GetClassNameW
+IsWindowVisible          = user32.IsWindowVisible
 GetWindowThreadProcessId = user32.GetWindowThreadProcessId
-SetWindowPos           = user32.SetWindowPos
-SetWindowPos.restype   = wintypes.BOOL
-IsIconic               = user32.IsIconic
-ShowWindow             = user32.ShowWindow
-IsWindow               = user32.IsWindow
+SetWindowPos             = user32.SetWindowPos
+SetWindowPos.restype     = wintypes.BOOL
+IsIconic                 = user32.IsIconic
+ShowWindow               = user32.ShowWindow
+IsWindow                 = user32.IsWindow
 
 try:
-    GetWindowLongPtr          = user32.GetWindowLongPtrW
-    GetWindowLongPtr.restype  = ctypes.c_long
+    GetWindowLongPtr         = user32.GetWindowLongPtrW
+    GetWindowLongPtr.restype = ctypes.c_long
 except AttributeError:
-    GetWindowLongPtr          = user32.GetWindowLongW
-    GetWindowLongPtr.restype  = ctypes.c_long
+    GetWindowLongPtr         = user32.GetWindowLongW
+    GetWindowLongPtr.restype = ctypes.c_long
 
 GetForegroundWindow          = user32.GetForegroundWindow
 GetForegroundWindow.restype  = wintypes.HWND
@@ -111,7 +100,7 @@ SetForegroundWindow          = user32.SetForegroundWindow
 SetForegroundWindow.argtypes = [wintypes.HWND]
 SetForegroundWindow.restype  = wintypes.BOOL
 
-# ── NEW V0.6/V0.7: AttachThreadInput ──────────────────────────────────────────
+# AttachThreadInput — used ONLY in the WinEvent callback, never in the heartbeat
 AttachThreadInput            = user32.AttachThreadInput
 AttachThreadInput.argtypes   = [wintypes.DWORD, wintypes.DWORD, wintypes.BOOL]
 AttachThreadInput.restype    = wintypes.BOOL
@@ -119,29 +108,9 @@ AttachThreadInput.restype    = wintypes.BOOL
 GetCurrentThreadId           = kernel32.GetCurrentThreadId
 GetCurrentThreadId.restype   = wintypes.DWORD
 
-GetParent                    = user32.GetParent
-GetParent.argtypes           = [wintypes.HWND]
-GetParent.restype            = wintypes.HWND
-
-GetAncestor                  = user32.GetAncestor
-GetAncestor.argtypes         = [wintypes.HWND, wintypes.UINT]
-GetAncestor.restype          = wintypes.HWND
-
-GA_PARENT    = 1
-GA_ROOT      = 2
-GA_ROOTOWNER = 3
-
-GetClassNameW                = user32.GetClassNameW
-GetClassNameW.argtypes       = [wintypes.HWND, wintypes.LPWSTR, ctypes.c_int]
-GetClassNameW.restype        = ctypes.c_int
-
-FindWindowExW                = user32.FindWindowExW
-FindWindowExW.argtypes       = [wintypes.HWND, wintypes.HWND, wintypes.LPCWSTR, wintypes.LPCWSTR]
-FindWindowExW.restype        = wintypes.HWND
-
 # WinEventHook
-WINEVENT_OUTOFCONTEXT    = 0x0000
-EVENT_SYSTEM_FOREGROUND  = 0x0003
+WINEVENT_OUTOFCONTEXT   = 0x0000
+EVENT_SYSTEM_FOREGROUND = 0x0003
 
 WINEVENTPROC = ctypes.WINFUNCTYPE(
     None,
@@ -149,18 +118,18 @@ WINEVENTPROC = ctypes.WINFUNCTYPE(
     wintypes.LONG,   wintypes.LONG,  wintypes.DWORD, wintypes.DWORD
 )
 
-SetWinEventHook              = user32.SetWinEventHook
-SetWinEventHook.restype      = wintypes.HANDLE
-SetWinEventHook.argtypes     = [
+SetWinEventHook          = user32.SetWinEventHook
+SetWinEventHook.restype  = wintypes.HANDLE
+SetWinEventHook.argtypes = [
     wintypes.UINT, wintypes.UINT, wintypes.HANDLE,
     WINEVENTPROC,  wintypes.DWORD, wintypes.DWORD, wintypes.UINT
 ]
 UnhookWinEvent = user32.UnhookWinEvent
 
 # Power / process management
-ES_CONTINUOUS        = 0x80000000
-ES_DISPLAY_REQUIRED  = 0x00000002
-ES_SYSTEM_REQUIRED   = 0x00000001
+ES_CONTINUOUS       = 0x80000000
+ES_DISPLAY_REQUIRED = 0x00000002
+ES_SYSTEM_REQUIRED  = 0x00000001
 
 SetThreadExecutionState = kernel32.SetThreadExecutionState
 SetPriorityClass        = kernel32.SetPriorityClass
@@ -172,14 +141,14 @@ OpenProcess             = kernel32.OpenProcess
 OpenProcess.restype     = wintypes.HANDLE
 CloseHandle             = kernel32.CloseHandle
 
-HIGH_PRIORITY_CLASS                  = 0x00000080
-PROCESS_QUERY_LIMITED_INFORMATION    = 0x1000
-ERROR_ALREADY_EXISTS                 = 183
+HIGH_PRIORITY_CLASS               = 0x00000080
+PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+ERROR_ALREADY_EXISTS              = 183
 
-GWL_EXSTYLE    = -20
-WS_EX_TOPMOST  = 0x00000008
-SW_RESTORE     = 9
-SW_HIDE        = 0
+GWL_EXSTYLE       = -20
+WS_EX_TOPMOST     = 0x00000008
+SW_RESTORE        = 9
+SW_HIDE           = 0
 SW_SHOWNOACTIVATE = 4
 
 SMTO_ABORTIFHUNG = 0x0002
@@ -188,7 +157,7 @@ WM_ACTIVATE          = 0x0006
 WA_ACTIVE            = 1
 WA_CLICKACTIVE       = 2
 WM_SETFOCUS          = 0x0007
-WM_KILLFOCUS         = 0x0008   # NEW V0.6
+WM_KILLFOCUS         = 0x0008
 WM_NCACTIVATE        = 0x0086
 WM_MOUSEACTIVATE     = 0x0021
 MA_ACTIVATE          = 1
@@ -209,7 +178,6 @@ EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPAR
 # ── Dependency bootstrap ─────────────────────────────────────────────────────
 
 def _pip_install(*packages):
-    """Install packages silently; return True on success."""
     try:
         subprocess.check_call(
             [sys.executable, "-m", "pip", "install", "--quiet", *packages],
@@ -220,22 +188,14 @@ def _pip_install(*packages):
         return False
 
 def _bootstrap_deps():
-    """Ensure customtkinter, pystray, and Pillow are available."""
     missing = []
-    try:
-        import customtkinter  # noqa: F401
-    except ImportError:
-        missing.append("customtkinter")
-    try:
-        import pystray        # noqa: F401
-    except ImportError:
-        missing.append("pystray")
-    try:
-        import PIL            # noqa: F401
-    except ImportError:
-        missing.append("Pillow")
+    for pkg, imp in [("customtkinter", "customtkinter"), ("pystray", "pystray"), ("Pillow", "PIL")]:
+        try:
+            __import__(imp)
+        except ImportError:
+            missing.append(pkg)
     if missing:
-        print(f"[Window Pinner] Installing missing dependencies: {', '.join(missing)} ...")
+        print(f"[Window Pinner] Installing: {', '.join(missing)} ...")
         if not _pip_install(*missing):
             import tkinter as tk
             from tkinter import messagebox
@@ -250,9 +210,9 @@ def _bootstrap_deps():
 
 _bootstrap_deps()
 
-import customtkinter as ctk  # noqa: E402
-import pystray                # noqa: E402
-from PIL import Image, ImageDraw  # noqa: E402
+import customtkinter as ctk
+import pystray
+from PIL import Image, ImageDraw
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
@@ -303,6 +263,53 @@ def _can_access_process(pid: int) -> bool:
     CloseHandle(h)
     return True
 
+def _get_class_name(hwnd) -> str:
+    buf = ctypes.create_unicode_buffer(256)
+    GetClassName(hwnd, buf, 256)
+    return buf.value
+
+# ── UWP/Xbox game HWND resolution ────────────────────────────────────────────
+#
+# Forza Horizon 6 (and other Xbox/UWP titles) run inside ApplicationFrameHost.
+# The HWND that appears in EnumWindows is the shell frame window — it has the
+# title bar but is NOT the game's render window. SetWindowPos on the frame works
+# for always-on-top, but focus messages must go to the inner CoreWindow HWND.
+#
+# We walk child windows looking for "Windows.UI.Core.CoreWindow" or
+# "ApplicationFrameInputSinkWindow", which are the real game surfaces.
+#
+# UWP_FRAME_CLASS  — the outer ApplicationFrameHost shell
+# UWP_CORE_CLASSES — candidate inner-game window class names
+
+UWP_FRAME_CLASS  = "ApplicationFrameWindow"
+UWP_CORE_CLASSES = {
+    "Windows.UI.Core.CoreWindow",
+    "ApplicationFrameInputSinkWindow",
+    "GAME_WINDOW",          # some Win32 games hosted in GameBar
+}
+
+def _resolve_game_hwnd(hwnd: int) -> int:
+    """
+    If hwnd belongs to an ApplicationFrameHost UWP shell, return the real
+    inner game HWND. Otherwise return hwnd unchanged.
+    """
+    if _get_class_name(hwnd) != UWP_FRAME_CLASS:
+        return hwnd
+
+    found = [hwnd]  # fallback to the frame if no inner HWND found
+
+    def _child_cb(child_hwnd, _lParam):
+        cls = _get_class_name(child_hwnd)
+        if cls in UWP_CORE_CLASSES:
+            found[0] = child_hwnd
+            return False  # stop enumeration
+        return True
+
+    cb = EnumWindowsProc(_child_cb)
+    EnumChildWindows(hwnd, cb, 0)
+    return found[0]
+
+
 def _enum_windows_callback(hwnd, lParam):
     if not IsWindowVisible(hwnd):
         return True
@@ -315,7 +322,7 @@ def _enum_windows_callback(hwnd, lParam):
         buf = ctypes.create_unicode_buffer(length + 1)
         GetWindowText(hwnd, buf, length + 1)
         title = buf.value.strip()
-        if title and title != "Window Pinner V0.7":
+        if title and title != "Window Pinner V0.8":
             ctypes.cast(lParam, ctypes.py_object).value.append((hwnd, title, pid.value))
     return True
 
@@ -326,74 +333,55 @@ def get_windows() -> list[tuple[int, str, int]]:
     EnumWindows(ENUM_WINDOWS_FUNC, ctypes.py_object(windows))
     return windows
 
-def get_window_class(hwnd: int) -> str:
-    buf = ctypes.create_unicode_buffer(256)
-    GetClassNameW(hwnd, buf, 256)
-    return buf.value
-
-def get_target_hwnd(hwnd: int) -> int:
-    """If hwnd is an ApplicationFrameWindow, return its Windows.UI.Core.CoreWindow child. Otherwise return hwnd."""
-    if get_window_class(hwnd) == "ApplicationFrameWindow":
-        child = FindWindowExW(hwnd, 0, "Windows.UI.Core.CoreWindow", None)
-        if child:
-            return child
-    return hwnd
-
 def is_topmost(hwnd) -> bool:
-    target = get_target_hwnd(hwnd)
-    return bool(GetWindowLongPtr(target, GWL_EXSTYLE) & WS_EX_TOPMOST)
+    return bool(GetWindowLongPtr(hwnd, GWL_EXSTYLE) & WS_EX_TOPMOST)
 
 def set_topmost(hwnd, enable: bool) -> bool:
-    target = get_target_hwnd(hwnd)
     flag = HWND_TOPMOST if enable else HWND_NOTOPMOST
-    ok   = SetWindowPos(target, flag, 0, 0, 0, 0, SWP_FLAGS)
+    ok   = SetWindowPos(hwnd, flag, 0, 0, 0, 0, SWP_FLAGS)
     if not ok and enable:
-        ok = SetWindowPos(target, flag, 0, 0, 0, 0, SWP_FLAGS | SWP_SHOWWINDOW)
-    if target != hwnd:
-        SetWindowPos(hwnd, flag, 0, 0, 0, 0, SWP_FLAGS)
+        ok = SetWindowPos(hwnd, flag, 0, 0, 0, 0, SWP_FLAGS | SWP_SHOWWINDOW)
     return bool(ok)
 
-# ── V0.6: AttachThreadInput focus injection ───────────────────────────────────
+# ── AttachThreadInput focus injection (event-only, NOT in heartbeat) ──────────
 
-def _inject_focus_via_attach(hwnd: int) -> bool:
+def _inject_focus_once(hwnd: int) -> bool:
     """
-    The SpecialK / DisplayFusion-style trick:
-    Temporarily attach our input queue to the target window's thread,
-    then call SetForegroundWindow. This bypasses the Win32 foreground-lock
-    and makes the game believe it genuinely has focus — without stealing
-    real keyboard/mouse input. Works reliably with Admin rights; gracefully
-    degrades to False without crashing in User Mode.
+    Called ONLY from _on_focus_change (the WinEvent callback) — fires once per
+    actual foreground-change event, NOT from the 16 ms heartbeat loop.
+
+    Temporarily attaches our input queue to the target thread, then calls
+    SetForegroundWindow to commit a genuine focus token. The game's own
+    GetForegroundWindow() will return itself.
+
+    Safe because:
+    - Called at most once per real focus-change (not 60x/sec)
+    - AttachThreadInput is immediately undone after SetForegroundWindow
+    - No keyboard/macro input is in flight during the brief attachment
     """
     try:
         my_tid     = GetCurrentThreadId()
         target_tid = GetWindowThreadProcessId(hwnd, None)
         if target_tid == 0 or target_tid == my_tid:
             return False
-        # Attach our input queue to the game thread
         AttachThreadInput(my_tid, target_tid, True)
         try:
             ok = bool(SetForegroundWindow(hwnd))
         finally:
-            # Always detach — even if SetForegroundWindow raised
             AttachThreadInput(my_tid, target_tid, False)
         return ok
     except Exception:
         return False
 
-# ── Tray icon image (generated, no file needed) ───────────────────────────────
+# ── Tray icon ─────────────────────────────────────────────────────────────────
 
 def _make_tray_icon(pinned_count: int = 0) -> Image.Image:
     size = 64
     img  = Image.new("RGBA", (size, size), (0, 0, 0, 0))
     draw = ImageDraw.Draw(img)
-
-    # Pin body
     draw.ellipse([4, 4, 60, 60], fill=(15, 15, 15, 255), outline=(59, 130, 246, 255), width=3)
-    # Pin needle
     draw.rectangle([30, 38, 34, 58], fill=(249, 250, 251, 220))
-    # Pin head
     draw.ellipse([20, 12, 44, 36], fill=(59, 130, 246, 255))
-
     if pinned_count > 0:
         draw.ellipse([42, 2, 62, 22], fill=(16, 185, 129, 255))
         label = str(pinned_count) if pinned_count < 10 else "+"
@@ -401,24 +389,23 @@ def _make_tray_icon(pinned_count: int = 0) -> Image.Image:
             from PIL import ImageFont
             font = ImageFont.load_default()
             bbox = draw.textbbox((0, 0), label, font=font)
-            tw   = bbox[2] - bbox[0]
-            th   = bbox[3] - bbox[1]
+            tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
             draw.text((52 - tw // 2, 12 - th // 2), label, fill=(0, 0, 0, 255), font=font)
         except Exception:
             pass
     return img
 
-# ── WindowRow widget ─────────────────────────────────────────────────────────
+# ── WindowRow widget ──────────────────────────────────────────────────────────
 
 class WindowRow(ctk.CTkFrame):
     def __init__(self, master, hwnd, title, pid, pinned, accessible, toggle_cb, **kwargs):
         super().__init__(master, fg_color=CARD, corner_radius=10, **kwargs)
-        self.hwnd       = hwnd
-        self.title      = title
-        self.pid        = pid
-        self._pinned    = pinned
+        self.hwnd        = hwnd
+        self.title       = title
+        self.pid         = pid
+        self._pinned     = pinned
         self._accessible = accessible
-        self.toggle_cb  = toggle_cb
+        self.toggle_cb   = toggle_cb
 
         self.columnconfigure(0, weight=1)
 
@@ -467,12 +454,12 @@ class WindowRow(ctk.CTkFrame):
             text_color=PINNED if pinned else (WARN if not self._accessible else BORDER)
         )
 
-# ── Main App ─────────────────────────────────────────────────────────────────
+# ── Main App ──────────────────────────────────────────────────────────────────
 
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Window Pinner V0.7")
+        self.title("Window Pinner V0.8")
         self.geometry("640x520")
         self.minsize(520, 380)
         self.configure(fg_color=BG)
@@ -483,12 +470,13 @@ class App(ctk.CTk):
         except Exception:
             pass
 
-        # App state
         self._all_windows: list[tuple[int, str, int]] = []
-        self._pinned: set[int] = set()
+        self._pinned: set[int]         = set()
+        # Maps frame_hwnd → real_game_hwnd for UWP games
+        self._hwnd_map: dict[int, int] = {}
         self._last_displayed_hwnds: list[int] = []
-        self._rows: dict[int, WindowRow] = {}
-        self._tray_icon: pystray.Icon | None = None
+        self._rows: dict[int, WindowRow]       = {}
+        self._tray_icon: pystray.Icon | None   = None
         self._tray_thread: threading.Thread | None = None
         self._hidden = False
 
@@ -524,27 +512,24 @@ class App(ctk.CTk):
 
     def _build_tray_menu(self) -> pystray.Menu:
         return pystray.Menu(
-            pystray.MenuItem("📌 Window Pinner V0.7", None, enabled=False),
+            pystray.MenuItem("📌 Window Pinner V0.8", None, enabled=False),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Show Window",  self._show_from_tray, default=True),
-            pystray.MenuItem("Unpin All",    self._tray_unpin_all),
+            pystray.MenuItem("Show Window", self._show_from_tray, default=True),
+            pystray.MenuItem("Unpin All",   self._tray_unpin_all),
             pystray.Menu.SEPARATOR,
-            pystray.MenuItem("Exit",         self._tray_exit),
+            pystray.MenuItem("Exit",        self._tray_exit),
         )
 
     def _start_tray(self):
-        icon_image = _make_tray_icon(len(self._pinned))
         self._tray_icon = pystray.Icon(
             name  = "WindowPinner",
-            icon  = icon_image,
+            icon  = _make_tray_icon(len(self._pinned)),
             title = self._tray_tooltip(),
             menu  = self._build_tray_menu(),
         )
         self._tray_icon.on_activate = lambda icon: self._show_from_tray(icon)
         self._tray_thread = threading.Thread(
-            target=self._tray_icon.run,
-            daemon=True,
-            name="TrayThread"
+            target=self._tray_icon.run, daemon=True, name="TrayThread"
         )
         self._tray_thread.start()
 
@@ -586,7 +571,7 @@ class App(ctk.CTk):
     def _tray_exit(self, icon=None):
         self.after(0, self._full_exit)
 
-    # ── Build UI ─────────────────────────────────────────────────────────────
+    # ── Build UI ──────────────────────────────────────────────────────────────
 
     def _build_ui(self):
         self.grid_rowconfigure(4, weight=1)
@@ -602,12 +587,11 @@ class App(ctk.CTk):
 
         title_frame = ctk.CTkFrame(header, fg_color="transparent")
         title_frame.grid(row=0, column=1, sticky="w")
-        ctk.CTkLabel(title_frame, text="Window Pinner", font=FONT_DISPLAY,
-                     text_color=TEXT).pack(anchor="w")
-
-        admin_status  = "ADMIN MODE" if is_admin() else "User Mode (Limited)"
-        status_color  = PINNED if is_admin() else "#ef4444"
-        ctk.CTkLabel(title_frame, text=f"V0.7 — {admin_status}",
+        ctk.CTkLabel(title_frame, text="Window Pinner",
+                     font=FONT_DISPLAY, text_color=TEXT).pack(anchor="w")
+        admin_status = "ADMIN MODE" if is_admin() else "User Mode (Limited)"
+        status_color = PINNED if is_admin() else "#ef4444"
+        ctk.CTkLabel(title_frame, text=f"V0.8 — {admin_status}",
                      font=FONT_SMALL, text_color=status_color).pack(anchor="w")
 
         self.pinned_badge = ctk.CTkLabel(
@@ -619,10 +603,8 @@ class App(ctk.CTk):
                                         text_color="#f87171", fg_color="#3a1a1a")
         self.pinned_badge.grid(row=0, column=2, padx=4)
 
-        ctk.CTkLabel(
-            header, text="✕ minimizes to tray", font=(_DEFAULT_FONT, 9),
-            text_color=MUTED
-        ).grid(row=0, column=3, padx=4)
+        ctk.CTkLabel(header, text="✕ minimizes to tray",
+                     font=(_DEFAULT_FONT, 9), text_color=MUTED).grid(row=0, column=3, padx=4)
 
         if not is_admin():
             ctk.CTkButton(
@@ -674,8 +656,8 @@ class App(ctk.CTk):
                 onvalue=True, offvalue=False
             ).pack(side="left", padx=15)
 
-        ctk.CTkLabel(settings_bar, text="Interval (s):", font=FONT_SMALL,
-                     text_color=SUBTEXT).pack(side="left", padx=(10, 2))
+        ctk.CTkLabel(settings_bar, text="Interval (s):",
+                     font=FONT_SMALL, text_color=SUBTEXT).pack(side="left", padx=(10, 2))
         ctk.CTkEntry(
             settings_bar, textvariable=self._refresh_interval_var,
             width=40, height=24, font=FONT_SMALL, fg_color=BG, border_color=BORDER
@@ -697,7 +679,8 @@ class App(ctk.CTk):
 
         ctk.CTkLabel(col_hdr, text="", width=24).grid(
             row=0, column=0, padx=(12, 4), sticky="w")
-        ctk.CTkLabel(col_hdr, text="Window Title", font=FONT_SMALL, text_color=MUTED).grid(
+        ctk.CTkLabel(col_hdr, text="Window Title",
+                     font=FONT_SMALL, text_color=MUTED).grid(
             row=0, column=1, padx=(0, 20), sticky="w")
         ctk.CTkLabel(col_hdr, text="Handle", font=FONT_SMALL, text_color=MUTED,
                      width=90, anchor="center").grid(row=0, column=2, padx=8, sticky="we")
@@ -733,8 +716,8 @@ class App(ctk.CTk):
                                               font=FONT_SMALL, text_color=MUTED, anchor="e")
         self.sleep_status_lbl.grid(row=0, column=3, padx=8, pady=6, sticky="e")
 
-        gh = ctk.CTkLabel(status, text="GitHub", font=FONT_SMALL, text_color=ACCENT2,
-                           anchor="e", cursor="hand2")
+        gh = ctk.CTkLabel(status, text="GitHub", font=FONT_SMALL,
+                           text_color=ACCENT2, anchor="e", cursor="hand2")
         gh.grid(row=0, column=4, padx=8, pady=6, sticky="e")
         gh.bind("<Button-1>", lambda e: webbrowser.open(
             "https://github.com/crazykat8091/windowpinner"))
@@ -744,7 +727,7 @@ class App(ctk.CTk):
         cr.grid(row=0, column=5, padx=(8, 16), pady=6, sticky="e")
         cr.bind("<Button-1>", lambda e: webbrowser.open("http://www.meshcon.tech"))
 
-    # ── Logic ────────────────────────────────────────────────────────────────
+    # ── Logic ─────────────────────────────────────────────────────────────────
 
     def _request_elevation(self):
         from tkinter import messagebox
@@ -775,19 +758,16 @@ class App(ctk.CTk):
 
     def _update_focus_lock_ui(self, *args):
         enabled = self._focus_lock_enabled.get()
-        # Show Enhanced vs Basic mode in the status indicator
         if enabled:
             mode  = "Enhanced" if is_admin() else "Basic"
             label = f"● Focus Lock on ({mode})"
+            desc  = f"Focus Lock active — {mode} mode"
         else:
             label = "○ Focus Lock off"
+            desc  = "Focus Lock disabled"
         self.focus_status_lbl.configure(
-            text_color=PINNED if enabled else MUTED,
-            text=label
-        )
-        self.status_lbl.configure(
-            text=f"Focus Lock active — {'Enhanced (AttachThreadInput)' if is_admin() else 'Basic (message flood)'}"
-            if enabled else "Focus Lock disabled")
+            text_color=PINNED if enabled else MUTED, text=label)
+        self.status_lbl.configure(text=desc)
         if enabled:
             try:
                 SetPriorityClass(GetCurrentProcess(), HIGH_PRIORITY_CLASS)
@@ -795,8 +775,8 @@ class App(ctk.CTk):
                 pass
 
     def _refresh_list(self, force=False):
-        new_wins     = get_windows()
-        new_hwnd_set = {h for h, _, _ in new_wins}
+        new_wins      = get_windows()
+        new_hwnd_set  = {h for h, _, _ in new_wins}
         prev_hwnd_set = {h for h, _, _ in self._all_windows}
 
         if not force and new_hwnd_set == prev_hwnd_set:
@@ -804,8 +784,8 @@ class App(ctk.CTk):
             for hwnd, row in self._rows.items():
                 new_title = title_map.get(hwnd, row.title)
                 if new_title != row.title:
-                    row.title   = new_title
-                    display     = new_title if len(new_title) <= 45 else new_title[:42] + "…"
+                    row.title  = new_title
+                    display    = new_title if len(new_title) <= 45 else new_title[:42] + "…"
                     if not row._accessible:
                         display = "🔒 " + display
                     row.lbl.configure(text=display)
@@ -815,6 +795,8 @@ class App(ctk.CTk):
         self._all_windows = new_wins
         existing          = {h for h, _, _ in self._all_windows}
         self._pinned     -= (self._pinned - existing)
+        # Clean stale hwnd_map entries
+        self._hwnd_map    = {k: v for k, v in self._hwnd_map.items() if k in existing}
         self._apply_filter()
         self._update_badge()
         self.status_lbl.configure(
@@ -855,14 +837,29 @@ class App(ctk.CTk):
 
     def _toggle(self, hwnd, title):
         pinned = hwnd not in self._pinned
-        ok     = set_topmost(hwnd, pinned)
+
         if pinned:
+            # Resolve the real game HWND for UWP/Xbox titles
+            real_hwnd = _resolve_game_hwnd(hwnd)
+            self._hwnd_map[hwnd] = real_hwnd
+
+            # Pin both the frame (for visual always-on-top) and the inner HWND
+            ok = set_topmost(hwnd, True)
+            if real_hwnd != hwnd:
+                set_topmost(real_hwnd, True)
             self._pinned.add(hwnd)
         else:
+            real_hwnd = self._hwnd_map.pop(hwnd, hwnd)
+            set_topmost(hwnd, False)
+            if real_hwnd != hwnd:
+                set_topmost(real_hwnd, False)
+            ok = True
             self._pinned.discard(hwnd)
+
         if hwnd in self._rows:
             self._rows[hwnd].update_state(pinned)
         self._update_badge()
+
         short = title[:40] + "…" if len(title) > 40 else title
         if not ok and pinned:
             self.status_lbl.configure(
@@ -871,12 +868,17 @@ class App(ctk.CTk):
             )
         else:
             verb = "Pinned" if pinned else "Unpinned"
-            self.status_lbl.configure(text=f"{verb}: {short}", text_color=SUBTEXT)
+            suffix = " (UWP inner HWND)" if (pinned and self._hwnd_map.get(hwnd) != hwnd) else ""
+            self.status_lbl.configure(
+                text=f"{verb}: {short}{suffix}", text_color=SUBTEXT)
         self._apply_filter()
 
     def _unpin_all(self):
         for hwnd in list(self._pinned):
+            real_hwnd = self._hwnd_map.pop(hwnd, hwnd)
             set_topmost(hwnd, False)
+            if real_hwnd != hwnd:
+                set_topmost(real_hwnd, False)
         self._pinned.clear()
         self._apply_filter()
         self._update_badge()
@@ -887,89 +889,78 @@ class App(ctk.CTk):
         self.pinned_badge.configure(text=f"{n} pinned")
         self._update_tray()
 
-    # ── V0.7 Enhanced _maintain_active_state ─────────────────────────────────
-
-    def _get_pinned_parent(self, hwnd: int) -> int | None:
-        if hwnd in self._pinned:
-            return hwnd
-        parent = GetParent(hwnd)
-        if parent and parent in self._pinned:
-            return parent
-        root = GetAncestor(hwnd, GA_ROOTOWNER)
-        if root and root in self._pinned:
-            return root
-        root_parent = GetAncestor(hwnd, GA_ROOT)
-        if root_parent and root_parent in self._pinned:
-            return root_parent
-        return None
+    # ── Heartbeat — NO AttachThreadInput, NO SetForegroundWindow ─────────────
+    #
+    # AttachThreadInput in a 16 ms loop merges input queues continuously,
+    # which blocks macro keys and prevents switching programs. It now lives
+    # exclusively in _on_focus_change (fires once per real event).
+    #
+    # The heartbeat does message-based focus spoofing only.
 
     def _maintain_active_state(self):
         if self._pinned:
-            fg_hwnd      = GetForegroundWindow()
-            focus_lock   = self._focus_lock_enabled.get()
-            admin_mode   = is_admin()
+            fg_hwnd    = GetForegroundWindow()
+            focus_lock = self._focus_lock_enabled.get()
 
             for hwnd in list(self._pinned):
                 if not IsWindow(hwnd):
                     continue
 
-                target_hwnd = get_target_hwnd(hwnd)
-                is_fg = (hwnd == fg_hwnd or target_hwnd == fg_hwnd)
+                # Resolve real HWND for UWP games
+                real_hwnd = self._hwnd_map.get(hwnd, hwnd)
 
-                # ── Always assert topmost ──────────────────────────────────
-                if IsIconic(hwnd) and not is_fg:
+                # Always re-assert topmost on both frame and inner HWND
+                if IsIconic(hwnd) and hwnd != fg_hwnd:
                     ShowWindow(hwnd, SW_RESTORE)
-                if not is_topmost(target_hwnd):
-                    set_topmost(hwnd, True)
+                if not is_topmost(hwnd):
+                    SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS | SWP_SHOWWINDOW)
+                if real_hwnd != hwnd and not is_topmost(real_hwnd):
+                    SetWindowPos(real_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS | SWP_SHOWWINDOW)
 
-                if not focus_lock or is_fg:
-                    PostMessage(target_hwnd, 0x000F, 0, 0)  # WM_PAINT
+                # Send focus messages to the real game HWND (inner CoreWindow for UWP)
+                target = real_hwnd
+
+                if not focus_lock or target == fg_hwnd:
+                    PostMessage(target, 0x000F, 0, 0)
                     continue
 
                 pid = wintypes.DWORD()
-                GetWindowThreadProcessId(target_hwnd, ctypes.byref(pid))
+                GetWindowThreadProcessId(target, ctypes.byref(pid))
 
-                # ── Enhanced path: Message Flood only (AttachThreadInput removed from heartbeat) ──
-                if admin_mode and _can_access_process(pid.value):
-                    # Step 1: Deny focus loss — send WM_KILLFOCUS then immediately
-                    # reclaim with WM_SETFOCUS. DX12/DXGI games watch for the
-                    # absence of WM_KILLFOCUS to decide they still have focus.
-                    t = 5  # tight timeout so a hung game never blocks our loop
-                    PostMessage(target_hwnd, WM_KILLFOCUS, 0, 0)
-                    PostMessage(target_hwnd, WM_SETFOCUS,  0, 0)
+                accessible = is_admin() and _can_access_process(pid.value)
+                t = 5  # ms — tight so the 16 ms loop never stalls
 
-                    # Step 2: Full activation sequence with corrected lParam=0
-                    # (V0.5 passed fg_hwnd which let games detect a foreign HWND)
-                    SendMessageTimeout(target_hwnd, WM_ENABLE,       1, 0, SMTO_ABORTIFHUNG, t, None)
-                    SendMessageTimeout(target_hwnd, WM_MDIACTIVATE,  target_hwnd, 0, SMTO_ABORTIFHUNG, t, None)
-                    SendMessageTimeout(target_hwnd, WM_NCACTIVATE,   1, 0, SMTO_ABORTIFHUNG, t, None)
-                    SendMessageTimeout(target_hwnd, WM_ACTIVATEAPP,  1, 0, SMTO_ABORTIFHUNG, t, None)
-                    # lParam = 0 (not fg_hwnd) — game cannot detect foreign HWND
-                    SendMessageTimeout(target_hwnd, WM_ACTIVATE, WA_ACTIVE,      0, SMTO_ABORTIFHUNG, t, None)
-                    SendMessageTimeout(target_hwnd, WM_ACTIVATE, WA_CLICKACTIVE, 0, SMTO_ABORTIFHUNG, t, None)
-                    SendMessageTimeout(target_hwnd, WM_SETFOCUS, 0, 0, SMTO_ABORTIFHUNG, t, None)
+                # WM_KILLFOCUS → WM_SETFOCUS deny-and-reclaim:
+                # Games watching for absence of KILLFOCUS see it and then
+                # immediately see SETFOCUS — net effect: "I never lost focus"
+                PostMessage(target, WM_KILLFOCUS, 0, 0)
+                PostMessage(target, WM_SETFOCUS,  0, 0)
 
-                    PostMessage(target_hwnd, WM_MOUSEACTIVATE,    target_hwnd, (MA_ACTIVATE << 16) | WM_LBUTTONDOWN)
-                    PostMessage(target_hwnd, WM_SETCURSOR,        target_hwnd, 1)
-                    PostMessage(target_hwnd, 0x0200, 0, 0)           # WM_MOUSEMOVE
-                    PostMessage(target_hwnd, WM_QUERYNEWPALETTE,  0, 0)
-                    PostMessage(target_hwnd, WM_IME_SETCONTEXT,   1, 0xC000000F)
-                    PostMessage(target_hwnd, WM_IME_NOTIFY,       IMN_SETOPENSTATUS, 0)
-                    PostMessage(target_hwnd, WM_INPUTLANGCHANGE,  0, 0)
-                    PostMessage(target_hwnd, WM_WINDOWPOSCHANGING, 0, 0)
-
+                if accessible:
+                    SendMessageTimeout(target, WM_ENABLE,      1,    0, SMTO_ABORTIFHUNG, t, None)
+                    SendMessageTimeout(target, WM_MDIACTIVATE, target, 0, SMTO_ABORTIFHUNG, t, None)
+                    SendMessageTimeout(target, WM_NCACTIVATE,  1,    0, SMTO_ABORTIFHUNG, t, None)
+                    SendMessageTimeout(target, WM_ACTIVATEAPP, 1,    0, SMTO_ABORTIFHUNG, t, None)
+                    # lParam=0: games cannot detect a foreign HWND (fixed from V0.5)
+                    SendMessageTimeout(target, WM_ACTIVATE, WA_ACTIVE,      0, SMTO_ABORTIFHUNG, t, None)
+                    SendMessageTimeout(target, WM_ACTIVATE, WA_CLICKACTIVE, 0, SMTO_ABORTIFHUNG, t, None)
+                    SendMessageTimeout(target, WM_SETFOCUS, 0, 0, SMTO_ABORTIFHUNG, t, None)
+                    PostMessage(target, WM_MOUSEACTIVATE,    target, (MA_ACTIVATE << 16) | WM_LBUTTONDOWN)
+                    PostMessage(target, WM_SETCURSOR,        target, 1)
+                    PostMessage(target, 0x0200, 0, 0)
+                    PostMessage(target, WM_QUERYNEWPALETTE,  0, 0)
+                    PostMessage(target, WM_IME_SETCONTEXT,   1, 0xC000000F)
+                    PostMessage(target, WM_IME_NOTIFY,       IMN_SETOPENSTATUS, 0)
+                    PostMessage(target, WM_INPUTLANGCHANGE,  0, 0)
+                    PostMessage(target, WM_WINDOWPOSCHANGING, 0, 0)
                 else:
-                    # ── Basic fallback path (User Mode or inaccessible process) ──
-                    t = 5
-                    PostMessage(target_hwnd, WM_KILLFOCUS,       0, 0)
-                    PostMessage(target_hwnd, WM_SETFOCUS,        0, 0)
-                    SendMessageTimeout(target_hwnd, WM_ENABLE,       1, 0, SMTO_ABORTIFHUNG, t, None)
-                    SendMessageTimeout(target_hwnd, WM_NCACTIVATE,   1, 0, SMTO_ABORTIFHUNG, t, None)
-                    SendMessageTimeout(target_hwnd, WM_ACTIVATEAPP,  1, 0, SMTO_ABORTIFHUNG, t, None)
-                    SendMessageTimeout(target_hwnd, WM_ACTIVATE, WA_ACTIVE, 0, SMTO_ABORTIFHUNG, t, None)
-                    SendMessageTimeout(target_hwnd, WM_SETFOCUS, 0, 0, SMTO_ABORTIFHUNG, t, None)
+                    # Basic path — fewer messages, still effective for non-hardened apps
+                    SendMessageTimeout(target, WM_NCACTIVATE,  1, 0, SMTO_ABORTIFHUNG, t, None)
+                    SendMessageTimeout(target, WM_ACTIVATEAPP, 1, 0, SMTO_ABORTIFHUNG, t, None)
+                    SendMessageTimeout(target, WM_ACTIVATE, WA_ACTIVE, 0, SMTO_ABORTIFHUNG, t, None)
+                    SendMessageTimeout(target, WM_SETFOCUS, 0, 0, SMTO_ABORTIFHUNG, t, None)
 
-                PostMessage(target_hwnd, 0x000F, 0, 0)  # WM_PAINT
+                PostMessage(target, 0x000F, 0, 0)  # WM_PAINT
 
         self.after(16, self._maintain_active_state)
 
@@ -997,22 +988,51 @@ class App(ctk.CTk):
 
     def _on_focus_change(self, hWinEventHook, event, hwnd, idObject, idChild,
                          dwEventThread, dwmsEventTime):
+        """
+        Fires when any window becomes foreground.
+
+        We use this ONLY to re-assert HWND_TOPMOST on pinned windows when something
+        else takes the foreground — e.g. a dialog or a new window that pops up above
+        a pinned window.
+
+        We do NOT call SetForegroundWindow or AttachThreadInput here.
+        Doing so would create an infinite re-entrant loop:
+          user clicks X → hook fires → SetForegroundWindow(game) → hook fires again
+          → SetForegroundWindow(game) → ... → focus locked on game forever.
+
+        Focus spoofing (WM_ACTIVATE etc.) is handled entirely by the 16 ms heartbeat.
+        That loop already checks `if target == fg_hwnd: skip`, so it only sends
+        messages when the game is NOT the real foreground — which is exactly right.
+        """
         if not hwnd:
             return
-        pinned_parent = self._get_pinned_parent(hwnd)
-        if pinned_parent:
-            target_hwnd = get_target_hwnd(pinned_parent)
-            if IsIconic(pinned_parent):
-                ShowWindow(pinned_parent, SW_RESTORE)
-            set_topmost(pinned_parent, True)
-            # Immediate focus re-injection on foreground change event
-            if is_admin():
-                _inject_focus_via_attach(target_hwnd)
-            PostMessage(target_hwnd, 0x000F, 0, 0)
+
+        # hwnd is the window that just became foreground.
+        # If it IS one of our pinned windows (or its inner real HWND), nothing to do —
+        # topmost is already set and we must not call SetForegroundWindow (re-entrancy).
+        for frame_hwnd in self._pinned:
+            real_hwnd = self._hwnd_map.get(frame_hwnd, frame_hwnd)
+            if hwnd == frame_hwnd or hwnd == real_hwnd:
+                return  # the pinned window itself just got focus — leave it alone
+
+        # A non-pinned window just took foreground. Re-assert topmost on all pinned
+        # windows so they stay visually above it. No focus calls — just layering.
+        for frame_hwnd in self._pinned:
+            if not IsWindow(frame_hwnd):
+                continue
+            real_hwnd = self._hwnd_map.get(frame_hwnd, frame_hwnd)
+            if IsIconic(frame_hwnd):
+                ShowWindow(frame_hwnd, SW_SHOWNOACTIVATE)
+            SetWindowPos(frame_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS)
+            if real_hwnd != frame_hwnd:
+                SetWindowPos(real_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS)
 
     def _full_exit(self):
         for hwnd in list(self._pinned):
+            real_hwnd = self._hwnd_map.get(hwnd, hwnd)
             set_topmost(hwnd, False)
+            if real_hwnd != hwnd:
+                set_topmost(real_hwnd, False)
         if self._current_execution_state != ES_CONTINUOUS:
             SetThreadExecutionState(ES_CONTINUOUS)
         if hasattr(self, "_hook") and self._hook:
@@ -1037,7 +1057,7 @@ if __name__ == "__main__":
 
     _instance_mutex = CreateMutexW(None, False, "Local\\WindowPinner_SingleInstance_Mutex")
     if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
-        hwnd = FindWindowW(None, "Window Pinner V0.7")
+        hwnd = FindWindowW(None, "Window Pinner V0.8")
         if hwnd:
             if IsIconic(hwnd):
                 ShowWindow(hwnd, SW_RESTORE)

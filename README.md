@@ -1,6 +1,6 @@
 # 📌 Window Pinner
 
-**Version 0.7** — A lightweight Windows utility to keep any window always on top and prevent background apps or games from pausing when they lose focus.
+**Version 0.6** — A lightweight Windows utility to keep any window always on top and prevent background apps or games from pausing when they lose focus.
 
 > **Author:** CrazyKat | **License:** MIT | [GitHub](https://github.com/crazykat8091/windowpinner) | [meshcon.tech](http://www.meshcon.tech)
 
@@ -12,7 +12,7 @@ Window Pinner gives you fine-grained control over window layering and focus beha
 
 It is a **free, open-source alternative** to paid tools like DisplayFusion or SpecialK for the specific use case of "always on top + focus spoofing."
 
-**V0.7 introduces UWP / Xbox App support and Input Hook Safety.** It adds automatic child window resolution for UWP containers (`ApplicationFrameWindow` -> `Windows.UI.Core.CoreWindow`), enabling pinning of games like Forza Horizon 6. It also isolates `AttachThreadInput` to run strictly on focus change events to eliminate program switching (Alt-Tab) lockups and macro key conflicts.
+**V0.8 fixes a critical re-entrant focus-trap loop** introduced in V0.7 that caused Focus Lock to permanently steal foreground from all other windows, making it impossible to switch programs while any window was pinned.
 
 ---
 
@@ -80,7 +80,7 @@ Or double-click `window_pinner.py` in File Explorer (requires Python to be assoc
 ```
 ┌──────────────────────────────────────────────────────────────┐
 │ 📌 Window Pinner              ✕ minimizes to tray            │
-│    V0.7 — ADMIN MODE                              2 pinned   │
+│    V0.8 — ADMIN MODE                              2 pinned   │
 ├──────────────────────────────────────────────────────────────┤
 │ 🔍 Search windows…         [↻ Refresh]  [✕ Unpin All]       │
 ├──────────────────────────────────────────────────────────────┤
@@ -113,7 +113,7 @@ Automatically re-scans open windows at the configured interval. Keeps the list c
 Prevents games and applications from detecting that they've lost focus. Two modes:
 
 **Enhanced Mode (Admin required):**
-Temporarily attaches Window Pinner's input queue to the target process's thread using `AttachThreadInput` strictly on focus transition events, then calls `SetForegroundWindow`. This makes Windows commit a genuine focus token to the game at the OS level — the game's own `GetForegroundWindow()` calls return itself as the foreground window. This is the same technique used by SpecialK and is the most reliable user-mode approach available. Isolated from the heartbeat loop to prevent program-switching lockups and macro key conflicts.
+Temporarily attaches Window Pinner's input queue to the target process's thread using `AttachThreadInput`, then calls `SetForegroundWindow`. This makes Windows commit a genuine focus token to the game at the OS level — the game's own `GetForegroundWindow()` calls return itself as the foreground window. This is the same technique used by SpecialK and is the most reliable user-mode approach available. Works with games that have hardened their focus detection against message-flood approaches.
 
 **Basic Mode (no Admin):**
 Sends a spoofed Windows activation message sequence (`WM_ACTIVATE`, `WM_SETFOCUS`, `WM_NCACTIVATE`, `WM_ACTIVATEAPP`, `WM_KILLFOCUS` + `WM_SETFOCUS` cycle, and more) to each pinned window at ~60 Hz. Effective for most non-hardened games and applications.
@@ -137,7 +137,7 @@ Window Pinner is a single-file Python application using:
 - **`pystray` & `Pillow`** for system tray integration and programmatic tray icon generation
 - **`EnumWindows`** to list all visible titled windows, filtered to exclude the app's own process
 - **`SetWindowPos(HWND_TOPMOST)`** to set/clear the always-on-top flag
-- **`AttachThreadInput`** (V0.7) — temporarily merges our thread's input queue with the target's on focus changes, allowing `SetForegroundWindow` to commit a genuine foreground token even against games with hardened focus detection
+- **`AttachThreadInput`** (V0.8) — temporarily merges our thread's input queue with the target's, allowing `SetForegroundWindow` to commit a genuine foreground token even against games with hardened focus detection
 - **`SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`** for immediate event-driven response when the active window changes
 - **`SendMessageTimeout`** with `SMTO_ABORTIFHUNG` and a tight 5 ms timeout for safe, non-blocking message delivery
 - **`SetThreadExecutionState`** for sleep prevention
@@ -146,7 +146,7 @@ Window Pinner is a single-file Python application using:
 
 ### Why DisplayFusion Still Works Without Updates
 
-DisplayFusion uses a **kernel-mode driver** (`dfmirage.sys` / `dfdisplay.sys`) that hooks at the driver level — below the Win32 message layer entirely. It intercepts focus-loss events *before* they reach the game, rather than reacting to them after. No game update can patch a kernel driver from user space. Window Pinner operates in user mode only (no driver), so V0.7's `AttachThreadInput` approach is the closest equivalent available without a kernel component.
+DisplayFusion uses a **kernel-mode driver** (`dfmirage.sys` / `dfdisplay.sys`) that hooks at the driver level — below the Win32 message layer entirely. It intercepts focus-loss events *before* they reach the game, rather than reacting to them after. No game update can patch a kernel driver from user space. Window Pinner operates in user mode only (no driver), so the WM_ACTIVATE message-spoof approach is the closest equivalent available without a kernel component.
 
 ---
 
@@ -187,20 +187,12 @@ Pull requests are welcome. For major changes, please open an issue first to disc
 
 For the full detailed release notes, see [CHANGELOG.md](https://github.com/crazykat8091/windowpinner/blob/main/CHANGELOG.md).
 
-### v0.7 (Current)
+### v0.8 (Current)
 
-- **FIX:** Added UWP / Xbox App Pinning support (e.g. Forza Horizon 6). Automatically resolves the top-level parent frame (`ApplicationFrameWindow`) to the child game window (`Windows.UI.Core.CoreWindow`) to apply topmost styles and send focus messages correctly.
-- **FIX:** Isolated `AttachThreadInput` to run only on foreground change events (inside the focus change event callback hook) instead of the 16 ms heartbeat loop. This fixes program switching lockups (Alt-Tab) and avoids input queue congestion.
-- **FIX:** Fixed macro key conflicts by preventing continuous input queue merging.
-
-### v0.6
-
-- **FIX:** `AttachThreadInput`-based focus injection restores compatibility with games that hardened their focus detection (e.g. Forza Horizon 6 post-update). Temporarily merges Window Pinner's input queue with the target thread before calling `SetForegroundWindow` — the same technique used by SpecialK
-- **FIX:** `WM_ACTIVATE` lParam corrected from `fg_hwnd` to `0` — prevents games from detecting a foreign HWND in the activation message
-- **FIX:** `WM_KILLFOCUS` → `WM_SETFOCUS` deny-and-reclaim cycle added; suppresses focus-loss at the message level for DX12/DXGI-based games
-- **FIX:** `SendMessageTimeout` reduced from 25 ms to 5 ms — prevents the 16 ms heartbeat from stalling when a game thread is under high load
-- **NEW:** Focus Lock status indicator now shows `(Enhanced)` when `AttachThreadInput` is active or `(Basic)` when falling back to message-only mode
-- **NEW:** `AttachThreadInput` degrades gracefully in User Mode — no crash, automatically uses Basic path instead
+- **FIX:** Removed `SetForegroundWindow` and `AttachThreadInput` from `_on_focus_change` entirely. V0.7 called these inside the WinEvent hook, creating a re-entrant loop: click Chrome → hook fires → `SetForegroundWindow(game)` → hook fires again → loop → focus permanently trapped on the game
+- **FIX:** `_on_focus_change` now only re-asserts `HWND_TOPMOST` (visual layering) when a non-pinned window takes foreground. No focus injection happens in the hook
+- **FIX:** UWP/Xbox HWND resolution via `EnumChildWindows` (carried from V0.7) — correctly pins Forza Horizon 6 running inside `ApplicationFrameHost`
+- **KEPT:** `WM_ACTIVATE` lParam=0, `WM_KILLFOCUS`→`WM_SETFOCUS` cycle, 5 ms `SendMessageTimeout`, Admin/non-Admin path split
 
 ### v0.5
 
