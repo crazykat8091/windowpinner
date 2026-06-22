@@ -4,6 +4,26 @@ All notable changes to this project are documented in this file.
 
 ---
 
+## [0.9] — 2026-06-21
+
+### Fixed
+
+- **Macro key conflicts resolved** — removed all mouse messages (`WM_MOUSEACTIVATE`, `WM_SETCURSOR`, `WM_MOUSEMOVE`, `WM_LBUTTONDOWN`) from the heartbeat. Macro apps (AutoHotkey, Logitech GHUB, Razer Synapse) intercept these globally via low-level Windows input hooks. The fake mouse messages were triggering macros unintentionally and confusing window-targeting in macro apps.
+
+- **`WM_INPUTLANGCHANGE` removed** — macro apps watch this message to switch hotkey profiles. Sending it every 16 ms was randomly flipping the active profile mid-game.
+
+- **`WM_IME_SETCONTEXT` / `WM_IME_NOTIFY` removed** — IME-aware macro apps react to these for CJK input-mode switching, causing spurious profile changes.
+
+- **`WM_ENABLE`, `WM_MDIACTIVATE`, `WM_WINDOWPOSCHANGING`, `WM_QUERYNEWPALETTE` removed** — none contribute to focus spoofing for modern DX12 games and only added noise to other apps' message queues.
+
+### New
+
+- **`WM_SYSCOMMAND SC_RESTORE`** added to the activation sequence. UE4/UE5 and Unity IL2CPP games resume audio and physics simulation on this syscommand rather than on `WM_ACTIVATE` alone. Closes the remaining "game pauses but window stays on top" gap for Unreal/Unity titles.
+
+- **Heartbeat increased from 60 Hz to 120 Hz** (`after(16)` → `after(8)`). Halves the detection window between a real focus-loss event and the next spoof message cycle.
+
+---
+
 ## [0.8] — 2026-06-21
 
 ### Fixed

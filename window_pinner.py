@@ -1,5 +1,5 @@
 """
-Window Pinner V0.8 — Keep any window always on top
+Window Pinner V0.9 — Keep any window always on top
 
 A lightweight replacement for DisplayFusion / SpecialK's "prevent window deactivation" feature.
 
@@ -172,6 +172,8 @@ WM_MDIACTIVATE       = 0x0222
 WM_INPUTLANGCHANGE   = 0x0051
 WM_IME_NOTIFY        = 0x0282
 IMN_SETOPENSTATUS    = 0x0008
+WM_SYSCOMMAND        = 0x0112   # V0.9
+SC_RESTORE           = 0xF120   # V0.9
 
 EnumWindowsProc = ctypes.WINFUNCTYPE(ctypes.c_bool, wintypes.HWND, wintypes.LPARAM)
 
@@ -322,7 +324,7 @@ def _enum_windows_callback(hwnd, lParam):
         buf = ctypes.create_unicode_buffer(length + 1)
         GetWindowText(hwnd, buf, length + 1)
         title = buf.value.strip()
-        if title and title != "Window Pinner V0.8":
+        if title and title != "Window Pinner V0.9":
             ctypes.cast(lParam, ctypes.py_object).value.append((hwnd, title, pid.value))
     return True
 
@@ -459,7 +461,7 @@ class WindowRow(ctk.CTkFrame):
 class App(ctk.CTk):
     def __init__(self):
         super().__init__()
-        self.title("Window Pinner V0.8")
+        self.title("Window Pinner V0.9")
         self.geometry("640x520")
         self.minsize(520, 380)
         self.configure(fg_color=BG)
@@ -512,7 +514,7 @@ class App(ctk.CTk):
 
     def _build_tray_menu(self) -> pystray.Menu:
         return pystray.Menu(
-            pystray.MenuItem("📌 Window Pinner V0.8", None, enabled=False),
+            pystray.MenuItem("📌 Window Pinner V0.9", None, enabled=False),
             pystray.Menu.SEPARATOR,
             pystray.MenuItem("Show Window", self._show_from_tray, default=True),
             pystray.MenuItem("Unpin All",   self._tray_unpin_all),
@@ -889,13 +891,25 @@ class App(ctk.CTk):
         self.pinned_badge.configure(text=f"{n} pinned")
         self._update_tray()
 
-    # ── Heartbeat — NO AttachThreadInput, NO SetForegroundWindow ─────────────
+    # ── Heartbeat (120 Hz) ────────────────────────────────────────────────────
     #
-    # AttachThreadInput in a 16 ms loop merges input queues continuously,
-    # which blocks macro keys and prevents switching programs. It now lives
-    # exclusively in _on_focus_change (fires once per real event).
+    # Rules to avoid macro key conflicts:
+    #   - NO mouse messages (WM_MOUSEACTIVATE, WM_SETCURSOR, WM_MOUSEMOVE,
+    #     WM_LBUTTONDOWN). Macro apps (AHK, GHUB, Synapse) intercept these
+    #     globally. Fake mouse messages trigger macros unintentionally.
+    #   - NO WM_INPUTLANGCHANGE. Macro apps watch this to switch hotkey profiles.
+    #     Sending it randomly can flip the active profile mid-game.
+    #   - NO WM_IME_SETCONTEXT / WM_IME_NOTIFY. IME-aware macro apps react to
+    #     these for CJK input-mode switching.
+    #   - NO AttachThreadInput / SetForegroundWindow in the loop. Merging input
+    #     queues even briefly from the Tk main thread delays the pystray and
+    #     keyboard hook callbacks that macro apps rely on.
     #
-    # The heartbeat does message-based focus spoofing only.
+    # What we DO send: pure window-activation messages only. These go directly
+    # to the game's message queue and are not intercepted by input hook chains.
+    #
+    # Added: WM_SYSCOMMAND SC_RESTORE — some game engines (UE4/UE5, Unity
+    # IL2CPP) resume audio/physics on this, not on WM_ACTIVATE alone.
 
     def _maintain_active_state(self):
         if self._pinned:
@@ -909,60 +923,57 @@ class App(ctk.CTk):
                 # Resolve real HWND for UWP games
                 real_hwnd = self._hwnd_map.get(hwnd, hwnd)
 
-                # Always re-assert topmost on both frame and inner HWND
+                # Re-assert topmost on frame + inner HWND
                 if IsIconic(hwnd) and hwnd != fg_hwnd:
-                    ShowWindow(hwnd, SW_RESTORE)
+                    ShowWindow(hwnd, SW_SHOWNOACTIVATE)
                 if not is_topmost(hwnd):
                     SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS | SWP_SHOWWINDOW)
                 if real_hwnd != hwnd and not is_topmost(real_hwnd):
                     SetWindowPos(real_hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_FLAGS | SWP_SHOWWINDOW)
 
-                # Send focus messages to the real game HWND (inner CoreWindow for UWP)
                 target = real_hwnd
 
+                # Skip focus spoofing if game already IS the foreground
                 if not focus_lock or target == fg_hwnd:
-                    PostMessage(target, 0x000F, 0, 0)
                     continue
 
                 pid = wintypes.DWORD()
                 GetWindowThreadProcessId(target, ctypes.byref(pid))
-
                 accessible = is_admin() and _can_access_process(pid.value)
-                t = 5  # ms — tight so the 16 ms loop never stalls
 
-                # WM_KILLFOCUS → WM_SETFOCUS deny-and-reclaim:
-                # Games watching for absence of KILLFOCUS see it and then
-                # immediately see SETFOCUS — net effect: "I never lost focus"
+                t = 5  # ms — tight timeout; never stalls the 8 ms loop
+
+                # ── Pure activation sequence (no mouse, no IME, no input-lang) ──
+                #
+                # 1. KILLFOCUS → SETFOCUS: deny-and-reclaim.
+                #    Games watching for absence of KILLFOCUS see it arrive and
+                #    immediately see SETFOCUS — net: "I never lost focus."
                 PostMessage(target, WM_KILLFOCUS, 0, 0)
                 PostMessage(target, WM_SETFOCUS,  0, 0)
 
                 if accessible:
-                    SendMessageTimeout(target, WM_ENABLE,      1,    0, SMTO_ABORTIFHUNG, t, None)
-                    SendMessageTimeout(target, WM_MDIACTIVATE, target, 0, SMTO_ABORTIFHUNG, t, None)
-                    SendMessageTimeout(target, WM_NCACTIVATE,  1,    0, SMTO_ABORTIFHUNG, t, None)
-                    SendMessageTimeout(target, WM_ACTIVATEAPP, 1,    0, SMTO_ABORTIFHUNG, t, None)
-                    # lParam=0: games cannot detect a foreign HWND (fixed from V0.5)
-                    SendMessageTimeout(target, WM_ACTIVATE, WA_ACTIVE,      0, SMTO_ABORTIFHUNG, t, None)
-                    SendMessageTimeout(target, WM_ACTIVATE, WA_CLICKACTIVE, 0, SMTO_ABORTIFHUNG, t, None)
-                    SendMessageTimeout(target, WM_SETFOCUS, 0, 0, SMTO_ABORTIFHUNG, t, None)
-                    PostMessage(target, WM_MOUSEACTIVATE,    target, (MA_ACTIVATE << 16) | WM_LBUTTONDOWN)
-                    PostMessage(target, WM_SETCURSOR,        target, 1)
-                    PostMessage(target, 0x0200, 0, 0)
-                    PostMessage(target, WM_QUERYNEWPALETTE,  0, 0)
-                    PostMessage(target, WM_IME_SETCONTEXT,   1, 0xC000000F)
-                    PostMessage(target, WM_IME_NOTIFY,       IMN_SETOPENSTATUS, 0)
-                    PostMessage(target, WM_INPUTLANGCHANGE,  0, 0)
-                    PostMessage(target, WM_WINDOWPOSCHANGING, 0, 0)
+                    # 2. NCACTIVATE(1): non-client area draws as active
+                    SendMessageTimeout(target, WM_NCACTIVATE,  1, 0, SMTO_ABORTIFHUNG, t, None)
+                    # 3. ACTIVATEAPP(1): process is active
+                    SendMessageTimeout(target, WM_ACTIVATEAPP, 1, 0, SMTO_ABORTIFHUNG, t, None)
+                    # 4. ACTIVATE(WA_ACTIVE, lParam=0): standard focus grant.
+                    #    lParam=0 is critical — passing fg_hwnd lets games detect
+                    #    the foreign HWND and flag the message as spoofed.
+                    SendMessageTimeout(target, WM_ACTIVATE, WA_ACTIVE, 0, SMTO_ABORTIFHUNG, t, None)
+                    # 5. SETFOCUS: explicit keyboard focus grant
+                    SendMessageTimeout(target, WM_SETFOCUS,  0, 0, SMTO_ABORTIFHUNG, t, None)
+                    # 6. SC_RESTORE: UE4/UE5 and Unity IL2CPP resume audio/physics
+                    #    on this syscommand, not on WM_ACTIVATE alone.
+                    PostMessage(target, WM_SYSCOMMAND, SC_RESTORE, 0)
                 else:
-                    # Basic path — fewer messages, still effective for non-hardened apps
+                    # Basic path (User Mode / inaccessible process)
                     SendMessageTimeout(target, WM_NCACTIVATE,  1, 0, SMTO_ABORTIFHUNG, t, None)
                     SendMessageTimeout(target, WM_ACTIVATEAPP, 1, 0, SMTO_ABORTIFHUNG, t, None)
                     SendMessageTimeout(target, WM_ACTIVATE, WA_ACTIVE, 0, SMTO_ABORTIFHUNG, t, None)
-                    SendMessageTimeout(target, WM_SETFOCUS, 0, 0, SMTO_ABORTIFHUNG, t, None)
+                    SendMessageTimeout(target, WM_SETFOCUS,  0, 0, SMTO_ABORTIFHUNG, t, None)
+                    PostMessage(target, WM_SYSCOMMAND, SC_RESTORE, 0)
 
-                PostMessage(target, 0x000F, 0, 0)  # WM_PAINT
-
-        self.after(16, self._maintain_active_state)
+        self.after(8, self._maintain_active_state)  # 120 Hz
 
     def _toggle_prevent_sleep(self, *args):
         enabled   = self._prevent_sleep_enabled.get()
@@ -1057,7 +1068,7 @@ if __name__ == "__main__":
 
     _instance_mutex = CreateMutexW(None, False, "Local\\WindowPinner_SingleInstance_Mutex")
     if kernel32.GetLastError() == ERROR_ALREADY_EXISTS:
-        hwnd = FindWindowW(None, "Window Pinner V0.8")
+        hwnd = FindWindowW(None, "Window Pinner V0.9")
         if hwnd:
             if IsIconic(hwnd):
                 ShowWindow(hwnd, SW_RESTORE)
