@@ -21,19 +21,23 @@ DISCLAIMER: This utility interacts with Windows focus and messaging systems. Whi
 for productivity, using this tool with certain video games may technically violate their
 Terms of Service (ToS). Use at your own discretion.
 
-Changelog V0.8:
-- FIX: Removed SetForegroundWindow and AttachThreadInput from _on_focus_change entirely.
-  V0.7 called _inject_focus_once(game_hwnd) inside the WinEvent hook. This created an
-  infinite re-entrant loop: user clicks Chrome → hook fires → SetForegroundWindow(Forza)
-  → hook fires again with Forza as new foreground → SetForegroundWindow(Forza) → loop →
-  focus permanently locked on the game, impossible to switch away.
-- FIX: _on_focus_change now only re-asserts HWND_TOPMOST (visual layering) when a
-  non-pinned window takes foreground. No focus injection of any kind happens here.
-  Focus spoofing (WM_ACTIVATE, WM_SETFOCUS etc.) is handled exclusively by the 16 ms
-  heartbeat, which already skips a pinned window when it IS the real foreground window.
-- KEPT from V0.7: UWP/Xbox HWND resolution via EnumChildWindows, WM_ACTIVATE lParam=0
-  fix, WM_KILLFOCUS→WM_SETFOCUS deny-and-reclaim cycle, 5 ms SendMessageTimeout,
-  graceful Admin/non-Admin path split.
+Changelog V0.9:
+- FIX: All mouse messages removed from heartbeat (WM_MOUSEACTIVATE, WM_SETCURSOR,
+  WM_MOUSEMOVE, WM_LBUTTONDOWN). Macro apps (AutoHotkey, Logitech GHUB, Razer Synapse)
+  intercept these globally via low-level input hooks, causing unintended macro triggers.
+- FIX: WM_INPUTLANGCHANGE removed — macro apps watch this to switch hotkey profiles;
+  sending it randomly was flipping the active profile mid-game.
+- FIX: WM_IME_SETCONTEXT and WM_IME_NOTIFY removed — IME-aware macro tools react to
+  these for input-mode switching, causing spurious profile changes.
+- FIX: WM_ENABLE, WM_MDIACTIVATE, WM_WINDOWPOSCHANGING, WM_QUERYNEWPALETTE removed —
+  no effect on modern games, only added noise to other apps' message queues.
+- NEW: WM_SYSCOMMAND SC_RESTORE added to activation sequence. UE4/UE5 and Unity IL2CPP
+  games resume audio and physics on this syscommand, not on WM_ACTIVATE alone.
+- NEW: Heartbeat increased from 60 Hz (16 ms) to 120 Hz (8 ms) — halves the window
+  between a real focus-loss event and the next spoof cycle.
+- KEPT from V0.8: _on_focus_change does topmost-only (no SetForegroundWindow),
+  UWP/Xbox HWND resolution via EnumChildWindows, WM_ACTIVATE lParam=0 fix,
+  WM_KILLFOCUS→WM_SETFOCUS deny-and-reclaim, 5 ms SendMessageTimeout.
 """
 
 import ctypes
@@ -593,7 +597,7 @@ class App(ctk.CTk):
                      font=FONT_DISPLAY, text_color=TEXT).pack(anchor="w")
         admin_status = "ADMIN MODE" if is_admin() else "User Mode (Limited)"
         status_color = PINNED if is_admin() else "#ef4444"
-        ctk.CTkLabel(title_frame, text=f"V0.8 — {admin_status}",
+        ctk.CTkLabel(title_frame, text=f"V0.9 — {admin_status}",
                      font=FONT_SMALL, text_color=status_color).pack(anchor="w")
 
         self.pinned_badge = ctk.CTkLabel(
